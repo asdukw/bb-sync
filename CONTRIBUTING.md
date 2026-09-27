@@ -9,7 +9,7 @@
 - Python 3.11 或更高版本；
 - [uv](https://docs.astral.sh/uv/)；
 - Git；
-- Node.js 22+ 与 npm（运行 Steel 集成测试时可能需要）。
+- Node.js 22+ 与 npm
 
 初始化并安装开发依赖：
 
