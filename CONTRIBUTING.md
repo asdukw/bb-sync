@@ -11,15 +11,17 @@
 - Git；
 - Node.js 22+ 与 npm
 
+macOS 可用 `brew install git node uv`；Windows 可按 README 用 `winget` 安装。
+
 初始化并安装开发依赖：
 
-```powershell
+```shell
 uv sync
 ```
 
 ## 常用检查
 
-```powershell
+```shell
 uv run pytest          # 单元测试 + CLI 端到端测试（默认全离线）
 uv run ruff check .    # 静态检查
 uv run ruff format .   # 格式化
@@ -28,7 +30,7 @@ uv run pyright         # 类型检查
 
 提交前至少运行一次能覆盖改动的测试；涉及 CLI 契约、配置或输出通道时，应运行完整测试：
 
-```powershell
+```shell
 uv run pytest
 uv run ruff check .
 uv run ruff format --check .
@@ -44,7 +46,7 @@ uv run pyright
 
 ## CI
 
-`.github/workflows/ci.yml` 在 push 和 PR 时运行：
+`.github/workflows/ci.yml` 在 push 和 PR 时运行（Ubuntu 与 macOS）：
 
 - Ruff lint；
 - Ruff format check；

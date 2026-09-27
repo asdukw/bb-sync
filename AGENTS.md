@@ -9,11 +9,14 @@
 - **是什么**：Blackboard 课程资源自动同步 CLI。登录香港中文大学（深圳）的 `bb.cuhk.edu.cn`
   （ADFS SSO），把课件 / 作业 / 指导增量下载到课程目录，公告保存为 Markdown。
 - **仅适配** `bb.cuhk.edu.cn` 及其 ADFS 登录流程；不要为其他站点引入通用化假设。
+- **目标平台**：Windows 10/11 与 macOS（Intel / Apple Silicon）；文档示例需覆盖
+  PowerShell 与 zsh / bash。
 - **技术栈**：Python ≥3.11；Typer + Click（CLI）、pydantic v2（配置）、PyYAML、rich（输出）、
   keyring（凭据）、Playwright（浏览器自动化）。
 - **浏览器后端**：Steel——本地 Node ≥22 服务，通过 CDP 接入，Chrome profile 持久化登录态。
 - **打包**：hatchling，`src/` 布局，入口 `bb-sync = bb_sync.cli:main`。
-- **语言**：代码注释、docstring、提交信息、用户文档一律中文。文档按 Windows PowerShell 编写。
+- **语言**：代码注释、docstring、提交信息、用户文档一律中文。安装与路径示例同时覆盖
+  Windows PowerShell 和 macOS zsh / bash。
 
 ## 目录导航
 
@@ -32,7 +35,7 @@
 
 ## 环境与常用命令
 
-```powershell
+```shell
 uv sync                    # 安装依赖（含 dev 组）
 uv run bb-sync --help      # 从源码运行 CLI
 uv run pytest              # 单元 + CLI 端到端（默认全离线）
@@ -43,12 +46,15 @@ uv run pyright             # 类型检查
 uv run bb-sync doctor      # 环境体检（触网；诊断走 stderr）
 ```
 
+以上命令在 Windows PowerShell 与 macOS zsh / bash 中相同。macOS 前置依赖可用
+`brew install git node uv` 安装。
+
 只有真实运行 `run` / `course list` / `doctor`（未加 `--skip-network`）才需要 Node ≥22、
 Chrome 或 Edge 和真实凭据；测试与质量检查完全离线。
 
 ### 提交前质量门禁（改动必须全绿）
 
-```powershell
+```shell
 uv run pytest
 uv run ruff check .
 uv run ruff format --check .
@@ -118,6 +124,7 @@ Steel 安装目录只能是 `BB_SYNC_HOME/.steel`，任何情况下不读写用�
   新增 help 逻辑时不要触发真实导入。
 - `bb-sync doctor` 的诊断输出走 stderr，stdout 只留给 `--json`；断言输出时先确认通道。
 - GitHub Actions 的 run 默认 `set -e`，断言非零退出码需用 `|| true` 兜住（见 `ci.yml` 注释）。
-- Windows 是主要目标平台（PowerShell 文档、盘符可用性检查），但 CI 跑 Linux；路径相关改动两边都要考虑。
+- Windows 与 macOS 是主要目标平台，CI 同时跑 Ubuntu 与 macOS；路径、后台进程和
+  浏览器探测相关改动两个平台都要考虑。
 - 首次准备 Steel 需从 GitHub / npm 拉依赖，国内网络慢时可临时用代理或镜像，不要写永久全局配置。
 - 下载目录默认 `~/courses`，课程资料有版权；禁止提交或外传 `courses/`、`.workbuddy/` 内容。

@@ -62,28 +62,85 @@ def _default_zip_url() -> str:
 STEEL_ZIP_URL = os.environ.get("STEEL_ZIP_URL") or _default_zip_url()
 
 IS_WIN = sys.platform.startswith("win")
+IS_MACOS = sys.platform == "darwin"
 
 #: 默认 console，模块级函数在被命令层调用前可 keep 静默；命令层应传入自己的 console
 _SILENT = Console(quiet=True)
 
 
+def _node_candidates() -> tuple[Path, ...]:
+    """Node.js 的常见安装位置（PATH 查询失败后的兜底）。"""
+    if IS_WIN:
+        return (Path(r"C:\nvm4w\nodejs\node.exe"),)
+    if IS_MACOS:
+        return (Path("/opt/homebrew/bin/node"), Path("/usr/local/bin/node"))
+    return (Path("/usr/local/bin/node"), Path("/usr/bin/node"))
+
+
+def _node_install_hint() -> str:
+    """按平台给出 Node.js 安装方式。"""
+    if IS_MACOS:
+        return "浏览器后端需要 Node.js ≥22：brew install node"
+    if IS_WIN:
+        return "浏览器后端需要 Node.js ≥22：winget install OpenJS.NodeJS.LTS"
+    return "浏览器后端需要 Node.js ≥22：请通过系统包管理器安装"
+
+
 def _node_bin() -> str:
-    """定位 Node.js：优先 PATH，其次 nvm4w 默认安装位置。"""
+    """定位 Node.js：优先 PATH，其次 Homebrew / nvm4w 的常见位置。"""
     found = shutil.which("node")
     if found:
         return found
-    for cand in (r"C:\nvm4w\nodejs\node.exe",):
-        if Path(cand).exists():
-            return cand
-    raise EnvironmentError_(
-        "未找到 Node.js",
-        "浏览器后端需要 Node.js ≥22：winget install OpenJS.NodeJS.LTS",
-    )
+    for cand in _node_candidates():
+        if cand.exists():
+            return str(cand)
+    raise EnvironmentError_("未找到 Node.js", _node_install_hint())
 
 
 def _npm_bin() -> str | None:
-    """定位 npm（与 Node.js 一起安装，测试可替换）。"""
-    return shutil.which("npm")
+    """定位 npm：优先 PATH，其次查找 Node.js 同目录。"""
+    found = shutil.which("npm")
+    if found:
+        return found
+    try:
+        node = Path(_node_bin())
+    except EnvironmentError_:
+        return None
+    for name in ("npm", "npm.cmd", "npm.exe"):
+        candidate = node.with_name(name)
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
+def _browser_candidates() -> tuple[str, ...]:
+    """按当前平台列出 Chrome / Edge 的常见安装路径。"""
+    if IS_WIN:
+        pf = os.environ.get("PROGRAMFILES", r"C:\Program Files")
+        pf86 = os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")
+        return (
+            rf"{pf}\Google\Chrome\Application\chrome.exe",
+            rf"{pf86}\Google\Chrome\Application\chrome.exe",
+            rf"{pf86}\Microsoft\Edge\Application\msedge.exe",
+            rf"{pf}\Microsoft\Edge\Application\msedge.exe",
+        )
+    if IS_MACOS:
+        chrome = Path("Google Chrome.app/Contents/MacOS/Google Chrome")
+        edge = Path("Microsoft Edge.app/Contents/MacOS/Microsoft Edge")
+        system_apps = Path("/Applications")
+        user_apps = Path.home() / "Applications"
+        return (
+            str(system_apps / chrome),
+            str(user_apps / chrome),
+            str(system_apps / edge),
+            str(user_apps / edge),
+        )
+    return (
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/microsoft-edge",
+    )
 
 
 def detect_browser() -> str | None:
@@ -92,27 +149,7 @@ def detect_browser() -> str | None:
     Steel 自带的探测只认 Chrome 标准路径，裸机（仅预装 Edge）会直接失败；
     这里提前探测，结果通过 ``CHROME_EXECUTABLE_PATH`` 传给 Steel 进程。
     """
-    if IS_WIN:
-        pf = os.environ.get("PROGRAMFILES", r"C:\Program Files")
-        pf86 = os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")
-        candidates = [
-            rf"{pf}\Google\Chrome\Application\chrome.exe",
-            rf"{pf86}\Google\Chrome\Application\chrome.exe",
-            rf"{pf86}\Microsoft\Edge\Application\msedge.exe",
-            rf"{pf}\Microsoft\Edge\Application\msedge.exe",
-        ]
-    elif sys.platform == "darwin":
-        candidates = [
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-        ]
-    else:
-        candidates = [
-            "/usr/bin/google-chrome",
-            "/usr/bin/chromium",
-            "/usr/bin/chromium-browser",
-            "/usr/bin/microsoft-edge",
-        ]
+    candidates = _browser_candidates()
     return next((c for c in candidates if Path(c).exists()), None)
 
 
@@ -381,6 +418,7 @@ def start_server(console: Console = _SILENT, headed: bool = False, wait: int = 1
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(
             subprocess, "CREATE_NEW_PROCESS_GROUP", 0
         )
+    # macOS/Linux 使用独立会话，避免用户关闭终端时 Steel 被 SIGHUP 结束。
     subprocess.Popen(
         [_node_bin(), str(tsx), "src/index.ts"],
         cwd=str(STEEL_DIR),
@@ -389,6 +427,7 @@ def start_server(console: Console = _SILENT, headed: bool = False, wait: int = 1
         stderr=logf,
         stdin=subprocess.DEVNULL,
         creationflags=flags,
+        start_new_session=not IS_WIN,
     )
 
     for _ in range(wait):

@@ -2,8 +2,8 @@
 
 优先级（高 → 低），对齐成熟 CLI 的惯例::
 
-    1. CLI 参数      bb-sync run --root D:/courses
-    2. 环境变量      BB_SYNC_ROOT=D:/courses
+    1. CLI 参数      bb-sync run --root ~/University/courses
+    2. 环境变量      BB_SYNC_ROOT=~/University/courses
     3. 配置文件      ~/.bb-sync/config.yaml
     4. 内置默认值    DEFAULT_CONFIG 同源
 

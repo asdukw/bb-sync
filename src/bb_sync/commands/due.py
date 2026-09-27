@@ -16,7 +16,7 @@ HELP = """扫描课程主页 Due / To Do 模块，生成按优先级排列的 du
 示例：
   bb-sync due                         扫描全部课程并写入 <root>/due.md
   bb-sync due --course CSC5010        只扫描指定课程（可重复）
-  bb-sync due --root D:/University    临时指定输出目录
+  bb-sync due --root ~/University     临时指定输出目录
   bb-sync due --headed                有头模式（首次登录 / 需要人工过 MFA）
   bb-sync --json due                  输出机器可读 JSON
 """

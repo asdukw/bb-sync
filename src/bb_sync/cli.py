@@ -16,7 +16,7 @@
     bb-sync run                    # 增量同步全部课程
     bb-sync run --course CSC5010   # 只同步一门课
     bb-sync course list --json     # 机器可读地列出课程
-    bb-sync config set root D:/courses
+    bb-sync config set root ~/University/courses
     bb-sync doctor
     bb-sync auth login / logout / status
 """

@@ -195,6 +195,23 @@ def test_config_set_then_get_roundtrip(cli) -> None:
     assert json.loads(result.stdout) == "D:/courses"
 
 
+def test_config_edit_uses_macos_default_text_editor(cli, monkeypatch) -> None:
+    """macOS 未设置 EDITOR 时，用 open -t 交给系统默认文本编辑器。"""
+    import bb_sync.commands.config as config_cmd
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(config_cmd.sys, "platform", "darwin")
+    monkeypatch.delenv("EDITOR", raising=False)
+    monkeypatch.setattr(config_cmd.subprocess, "call", lambda args: calls.append(args))
+
+    result = cli(["config", "edit"])
+
+    assert result.exit_code == 0
+    assert len(calls) == 1
+    assert calls[0][:2] == ["open", "-t"]
+    assert calls[0][2].endswith("config.yaml")
+
+
 def test_config_set_root_syncs_home_config(cli, config_file: Path) -> None:
     """修改 root 时同步用户级配置，保证换目录运行也生效。"""
     project = Path.cwd() / "config.yaml"

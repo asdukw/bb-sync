@@ -2,6 +2,29 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.5.0] — 2026-09-28
+
+### 新增
+
+- 正式支持 macOS（Intel / Apple Silicon）。安装与使用文档同时覆盖 Windows PowerShell
+  和 macOS zsh / bash；凭据在 macOS 上使用系统钥匙串保存。
+- CI 质量任务扩展到 macOS，与 Ubuntu 一起运行 Ruff、Pyright 和全部离线测试。
+
+### 改进
+
+- Steel 后端在 macOS 上可从 Homebrew 的 `/opt/homebrew/bin` 或 `/usr/local/bin`
+  定位 Node/npm，并同时探测系统与用户 `Applications` 下的 Chrome / Edge。
+- macOS 启动 Steel 时使用独立进程会话，关闭终端不会再把后台服务一并结束。
+- 下载目录位于未挂载的 `/Volumes/<名称>` 时立即给出配置错误，不再尝试在
+  `/Volumes` 下创建同名普通目录。
+- `bb-sync doctor` 的 git、Node.js 和浏览器修复提示会按 Windows / macOS 分别给出。
+- macOS 的 `bb-sync config edit` 在未设置 `EDITOR` 时使用系统默认文本编辑器。
+
+### 测试
+
+- 新增 macOS 路径探测、npm 同目录解析、后台进程脱离终端、doctor 平台提示和
+  配置编辑器契约测试。
+
 ## [1.4.0] — 2026-09-28
 
 ### 改进
@@ -170,6 +193,7 @@
 
 ---
 
+[1.5.0]: https://github.com/asdukw/bb-sync/releases/tag/v1.5.0
 [1.4.0]: https://github.com/asdukw/bb-sync/releases/tag/v1.4.0
 [1.3.0]: https://github.com/asdukw/bb-sync/releases/tag/v1.3.0
 [1.2.0]: https://github.com/asdukw/bb-sync/releases/tag/v1.2.0

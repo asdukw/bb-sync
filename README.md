@@ -3,12 +3,14 @@
 bb-sync 会登录香港中文大学（深圳）的 Blackboard，把课件、作业和指导增量下载到本地，并把公告与全部课程的待办整理成 Markdown。重复运行时会跳过已经下载的文件。
 
 - 仅适配 `bb.cuhk.edu.cn` 和它的 ADFS 登录流程。
-- 当前仅支持 Windows PowerShell。
+- 支持 Windows 10/11 PowerShell 与 macOS（Intel / Apple Silicon，zsh / bash）。
 - 课程资料仅供个人学习，请勿二次分发。
 
 ## 安装
 
-需要 Git、Node.js 22+（含 npm）、uv 和 Chrome 或 Edge。Windows 自带的 Edge 即可。
+需要 Git、Node.js 22+（含 npm）、uv 和 Chrome 或 Edge。bb-sync 会自动探测常见安装位置。
+
+### Windows
 
 在 PowerShell 中执行：
 
@@ -18,9 +20,24 @@ winget install --id OpenJS.NodeJS.LTS -e
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-**重开终端**，安装 bb-sync：
+Windows 自带的 Edge 即可使用；也可以自行安装 Google Chrome。
 
-```powershell
+### macOS
+
+推荐先安装 [Homebrew](https://brew.sh/)，再执行：
+
+```bash
+brew install git node uv
+brew install --cask google-chrome
+```
+
+如果已经安装 Chrome 或 Edge，可跳过最后一条。Edge 的 cask 名称为 `microsoft-edge`。
+
+### 安装 bb-sync（Windows / macOS 相同）
+
+**重开终端**后执行：
+
+```bash
 uv tool install git+https://github.com/asdukw/bb-sync
 bb-sync doctor
 ```
@@ -31,27 +48,32 @@ bb-sync doctor
 
 保存学号和密码：
 
-```powershell
+```bash
 bb-sync auth login
 ```
 
-密码会保存在 Windows 凭据管理器，不会写入配置文件。
+密码会保存在 Windows 凭据管理器或 macOS 钥匙串，不会写入配置文件。macOS 首次访问时可能弹出钥匙串授权提示，选择允许即可。
 
 第一次同步请显示浏览器，便于完成登录、MFA 或验证码：
 
-```powershell
+```bash
 bb-sync run --headed
 ```
 
 首次运行会自动准备浏览器后端，可能需要几分钟。保持网络连接，不要提前关闭终端。之后同步直接运行：
 
-```powershell
+```bash
 bb-sync run
 ```
 
 ## 文件位置
 
-默认下载到 `C:\Users\<你>\courses`，每门课一个文件夹：
+默认下载到用户主目录下的 `courses`：
+
+- Windows：`C:\Users\<你>\courses`
+- macOS：`/Users/<你>/courses`
+
+每门课一个文件夹：
 
 - 课件 → `lectures/`
 - 作业 → `assignments/`
@@ -61,11 +83,11 @@ bb-sync run
 
 要修改下载目录：
 
-```powershell
-bb-sync config set root "D:/University/courses"
+```bash
+bb-sync config set root "~/University/courses"
 ```
 
-更完整的配置说明见 [docs/config.md](docs/config.md)。
+Windows 也可以使用 `bb-sync config set root "D:/University/courses"`。更完整的配置说明见 [docs/config.md](docs/config.md)。
 
 ## 常用命令
 

@@ -1,6 +1,7 @@
 # ================= bb-sync 配置 =================
 
-# 课程资源根目录：默认放在用户主目录下的 courses/（如 C:\Users\<你>\courses）
+# 课程资源根目录：默认放在用户主目录下的 courses/
+# 例如 C:\Users\<你>\courses（Windows）或 /Users/<你>/courses（macOS）
 # 也可以改成任意绝对路径，或相对本文件的路径（如 .）
 root: ~/workspace
 

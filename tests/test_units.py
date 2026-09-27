@@ -331,6 +331,16 @@ def test_ensure_root_directory_reports_unavailable_drive(tmp_path: Path, monkeyp
     assert not target.exists()
 
 
+def test_macos_unmounted_volume_is_unavailable(monkeypatch) -> None:
+    """macOS 的 /Volumes/<名称> 未挂载时，不应在 /Volumes 下误建普通目录。"""
+    from bb_sync.core import service
+
+    monkeypatch.setattr(service.sys, "platform", "darwin")
+    root = Path("/Volumes/bb-sync-never-mounted/courses")
+
+    assert service._drive_available(root) is False
+
+
 # ---------------------------------------------------------------- Steel 安装目录
 
 
@@ -402,6 +412,90 @@ def test_steel_root_is_inside_bb_sync_home() -> None:
 
     assert steel.STEEL_ROOT == paths.BB_SYNC_HOME / ".steel"
     assert steel.STEEL_ROOT.parent == paths.BB_SYNC_HOME
+
+
+def test_steel_macos_common_paths(monkeypatch) -> None:
+    """macOS 回退覆盖 Homebrew Node、系统/用户 Applications 下的 Chrome/Edge。"""
+    from bb_sync.browser import steel
+
+    monkeypatch.setattr(steel, "IS_WIN", False)
+    monkeypatch.setattr(steel, "IS_MACOS", True)
+
+    node_candidates = {str(path).replace("\\", "/") for path in steel._node_candidates()}
+    assert {"/opt/homebrew/bin/node", "/usr/local/bin/node"} <= node_candidates
+
+    browser_candidates = {path.replace("\\", "/") for path in steel._browser_candidates()}
+    assert any(
+        path.endswith("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+        for path in browser_candidates
+    )
+    assert any(
+        path.endswith("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge")
+        for path in browser_candidates
+    )
+
+
+def test_steel_finds_npm_next_to_node(monkeypatch, tmp_path: Path) -> None:
+    """Node 经非 PATH 的 Homebrew 等位置命中时，npm 也应从同目录解析。"""
+    from bb_sync.browser import steel
+
+    node = tmp_path / "bin" / "node"
+    npm = tmp_path / "bin" / "npm"
+    node.parent.mkdir(parents=True)
+    node.write_text("node", encoding="utf-8")
+    npm.write_text("npm", encoding="utf-8")
+    monkeypatch.setattr(steel.shutil, "which", lambda name: None)
+    monkeypatch.setattr(steel, "_node_bin", lambda: str(node))
+
+    assert steel._npm_bin() == str(npm)
+
+
+def test_steel_start_server_detaches_on_macos(monkeypatch, tmp_path: Path) -> None:
+    """macOS 后台进程进入独立会话，终端退出时不应被 SIGHUP 结束。"""
+    from bb_sync.browser import steel
+
+    root = tmp_path / "home" / ".bb-sync" / ".steel"
+    _fake_steel_install(root, "macos")
+    _point_steel_at(monkeypatch, root)
+    monkeypatch.setattr(steel, "IS_WIN", False)
+    monkeypatch.setattr(steel, "_node_bin", lambda: "/opt/homebrew/bin/node")
+    monkeypatch.setattr(steel, "detect_browser", lambda: None)
+    monkeypatch.setattr(steel, "healthy", lambda: True)
+    monkeypatch.setattr(steel.time, "sleep", lambda _seconds: None)
+
+    captured_cmd: object = None
+    captured_kwargs: dict[str, object] = {}
+
+    def fake_popen(cmd, **kwargs):
+        nonlocal captured_cmd
+        captured_cmd = cmd
+        captured_kwargs.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(steel.subprocess, "Popen", fake_popen)
+
+    steel.start_server(wait=1)
+
+    assert captured_cmd == [
+        "/opt/homebrew/bin/node",
+        str(root / "node_modules" / "tsx" / "dist" / "cli.mjs"),
+        "src/index.ts",
+    ]
+    assert captured_kwargs["start_new_session"] is True
+
+
+def test_doctor_macos_install_hints(monkeypatch) -> None:
+    """doctor 在 macOS 上应给出 Homebrew 修复命令，而不是 winget。"""
+    from bb_sync.browser import steel
+    from bb_sync.core import doctor
+
+    monkeypatch.setattr(doctor.sys, "platform", "darwin")
+    monkeypatch.setattr(steel, "IS_WIN", False)
+    monkeypatch.setattr(steel, "IS_MACOS", True)
+
+    assert "brew install git" in doctor._git_install_hint()
+    assert "brew install node" in steel._node_install_hint()
+    assert "brew install --cask" in doctor._browser_install_hint()
 
 
 def test_steel_zip_url_is_pinned_to_commit() -> None:

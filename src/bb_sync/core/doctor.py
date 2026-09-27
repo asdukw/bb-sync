@@ -18,6 +18,7 @@ from urllib import error, request
 
 from bb_sync import __version__
 from bb_sync.browser import steel
+from bb_sync.core.errors import EnvironmentError_
 from bb_sync.core.output import Console
 from bb_sync.creds import load_credentials
 
@@ -45,6 +46,26 @@ def _tool_version(cmd: list[str]) -> str | None:
     return lines[0].strip() if lines and out.returncode == 0 else None
 
 
+def _git_install_hint() -> str:
+    """按平台给出 git 安装方式。"""
+    if sys.platform == "darwin":
+        return "bb-sync 从 GitHub 安装需要 git：brew install git"
+    if sys.platform.startswith("win"):
+        return "bb-sync 从 GitHub 安装需要 git：winget install --id Git.Git -e"
+    return "bb-sync 从 GitHub 安装需要 git：请通过系统包管理器安装"
+
+
+def _browser_install_hint() -> str:
+    """按平台给出浏览器安装方式。"""
+    if sys.platform == "darwin":
+        return "macOS 可运行 brew install --cask google-chrome 或 microsoft-edge"
+    if sys.platform.startswith("win"):
+        return (
+            "安装 Google Chrome 或使用 Windows 自带的 Edge；非默认位置时设置 CHROME_EXECUTABLE_PATH"
+        )
+    return "安装 Google Chrome、Chromium 或 Microsoft Edge；非默认位置时设置 CHROME_EXECUTABLE_PATH"
+
+
 def check_python() -> CheckResult:
     v = sys.version_info
     return CheckResult(
@@ -61,12 +82,15 @@ def check_git() -> CheckResult:
         bool(ver),
         "git",
         ver or "未找到",
-        "bb-sync 从 GitHub 安装需要 git：winget install --id Git.Git -e",
+        _git_install_hint(),
     )
 
 
 def check_node() -> CheckResult:
-    path = shutil.which("node")
+    try:
+        path = steel._node_bin()
+    except EnvironmentError_:
+        path = None
     ver = _tool_version([path, "--version"]) if path else None
     ok = False
     if ver:
@@ -76,12 +100,12 @@ def check_node() -> CheckResult:
         ok,
         "Node.js",
         ver or "未找到",
-        "浏览器后端需要 Node.js ≥22（自带 npm）：winget install OpenJS.NodeJS.LTS",
+        steel._node_install_hint() + "（自带 npm）",
     )
 
 
 def check_npm() -> CheckResult:
-    path = shutil.which("npm")
+    path = steel._npm_bin()
     ver = _tool_version([path, "--version"]) if path else None
     return CheckResult(
         bool(ver),
@@ -103,7 +127,7 @@ def check_browser() -> CheckResult:
         False,
         "浏览器",
         "未检测到 Chrome/Edge",
-        "安装 Google Chrome 或 Microsoft Edge；非默认位置时设置 CHROME_EXECUTABLE_PATH",
+        _browser_install_hint(),
     )
 
 

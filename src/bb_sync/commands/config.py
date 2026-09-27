@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path, PureWindowsPath
@@ -217,8 +218,12 @@ def edit(ctx: typer.Context) -> None:
     ensure_config_file(target)
     if sys.platform == "win32":
         os.startfile(target)  # type: ignore[attr-defined]
+    elif sys.platform == "darwin" and not os.environ.get("EDITOR"):
+        # macOS 没有通用的终端默认编辑器；open -t 交给系统默认文本编辑器。
+        subprocess.call(["open", "-t", str(target)])
     else:
-        subprocess.call([os.environ.get("EDITOR", "vi"), str(target)])
+        editor = shlex.split(os.environ.get("EDITOR", "vi"))
+        subprocess.call([*editor, str(target)])
     app_ctx.console.emit({"path": str(target), "opened": True})
 
 

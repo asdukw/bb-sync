@@ -10,8 +10,9 @@
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from playwright.sync_api import sync_playwright
 
@@ -60,14 +61,33 @@ def plan_root(settings: Settings, config_path: Path, cli_root: str | None) -> Pa
     return settings.resolve_root(config_path)
 
 
+def _macos_volume_root(root: Path) -> Path | None:
+    """返回根目录所属的 macOS ``/Volumes/<名称>``，不在该位置则返回 None。"""
+    if sys.platform != "darwin":
+        return None
+    posix = PurePosixPath(str(root).replace("\\", "/"))
+    if len(posix.parts) < 3 or posix.parts[:2] != ("/", "Volumes"):
+        return None
+    return Path(posix.parts[0]) / posix.parts[1] / posix.parts[2]
+
+
 def _drive_available(root: Path) -> bool:
-    """检查带盘符/网络共享的绝对路径，其根位置当前是否存在。"""
-    if not root.drive:
+    """检查盘符或 macOS 外接卷的根位置当前是否存在。"""
+    location = Path(root.anchor) if root.drive else _macos_volume_root(root)
+    if location is None:
         return True
     try:
-        return Path(root.anchor).exists()
+        return location.exists()
     except OSError:
         return False
+
+
+def _drive_label(root: Path) -> str:
+    """磁盘不可用时，用于错误信息的盘符或挂载点。"""
+    if root.drive:
+        return root.drive
+    volume = _macos_volume_root(root)
+    return str(volume) if volume is not None else str(root)
 
 
 def ensure_root_directory(root: Path) -> bool:
@@ -75,7 +95,7 @@ def ensure_root_directory(root: Path) -> bool:
     first_run = not root.exists()
     if not _drive_available(root):
         raise ConfigError(
-            f"下载根目录所在磁盘不可用：{root.drive}（当前配置：{root}）",
+            f"下载根目录所在磁盘不可用：{_drive_label(root)}（当前配置：{root}）",
             "请确认该磁盘已连接/挂载，或用 --root <可用目录> 临时指定；"
             "也可运行 bb-sync config set root <可用目录> 永久修改",
         )

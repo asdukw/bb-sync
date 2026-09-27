@@ -4,7 +4,8 @@
 
 ## 配置文件在哪
 
-- **默认位置**：`~/.bb-sync/config.yaml`（Windows 即 `C:\Users\<你>\.bb-sync\config.yaml`）
+- **默认位置**：`~/.bb-sync/config.yaml`（Windows 即
+  `C:\Users\<你>\.bb-sync\config.yaml`，macOS 即 `/Users/<你>/.bb-sync/config.yaml`）
 - **自动生成**：首次执行同步（`bb-sync run`）或修改配置时，如果找不到配置，
   会自动生成一份默认配置到上述位置
 - **优先级**：当前工作目录下的 `config.yaml` 优先于 `~/.bb-sync/` 里的（方便项目内覆盖）；
@@ -16,17 +17,27 @@
 一个配置项的值按以下顺序确定，**上面覆盖下面**：
 
 ```
-1. 命令行参数      bb-sync run --root D:/courses
-2. 环境变量        BB_SYNC_ROOT=D:/courses
+1. 命令行参数      bb-sync run --root ~/University/courses
+2. 环境变量        BB_SYNC_ROOT=~/University/courses
 3. 配置文件        ~/.bb-sync/config.yaml
 4. 内置默认值      root: ~/courses
 ```
 
 环境变量名 = `BB_SYNC_` + 配置项名的大写形式，支持全部配置项：
 
+Windows PowerShell：
+
 ```powershell
-$env:BB_SYNC_ROOT = "D:/courses"
+$env:BB_SYNC_ROOT = "~/University/courses"
 $env:BB_SYNC_MAX_DEPTH = "2"
+bb-sync run
+```
+
+macOS zsh / bash：
+
+```bash
+export BB_SYNC_ROOT="$HOME/University/courses"
+export BB_SYNC_MAX_DEPTH=2
 bb-sync run
 ```
 
@@ -37,17 +48,17 @@ bb-sync run
 
 不想手动编辑 YAML 时，可以用 `config` 子命令直接读写配置文件（编辑会保留原有注释）：
 
-```powershell
-bb-sync config path                # 显示实际生效的配置文件路径
-bb-sync config init                # 生成一份默认配置（已存在则不覆盖）
-bb-sync config show                # 显示整份配置
-bb-sync config get root            # 读取某一项
-bb-sync config set root D:/courses # 修改默认下载目录（永久生效）
-bb-sync config set root D:/courses --no-sync-home # 只改当前生效文件
-bb-sync config set include "[CSC5010, DDA5002]"   # 值含空格/列表时记得加引号
-bb-sync config set course_dirs.CSC5010 CSC5010_AI # 点号写法修改嵌套键
-bb-sync config unset root          # 删除某项（恢复内置默认值）
-bb-sync config edit                # 用系统编辑器打开配置文件
+```shell
+bb-sync config path                            # 显示实际生效的配置文件路径
+bb-sync config init                            # 生成一份默认配置（已存在则不覆盖）
+bb-sync config show                            # 显示整份配置
+bb-sync config get root                        # 读取某一项
+bb-sync config set root ~/University/courses   # 修改默认下载目录（永久生效）
+bb-sync config set root ~/University --no-sync-home # 只改当前生效文件
+bb-sync config set include "[CSC5010, DDA5002]"     # 值含空格/列表时记得加引号
+bb-sync config set course_dirs.CSC5010 CSC5010_AI   # 点号写法修改嵌套键
+bb-sync config unset root                      # 删除某项（恢复内置默认值）
+bb-sync config edit                            # 用系统编辑器打开配置文件
 ```
 
 `config` 操作的是「实际生效」的那份配置：当前目录有 `config.yaml` 就改它，
@@ -79,8 +90,8 @@ root: ~/courses
 
 - 支持 `~`（用户主目录）和相对路径；相对路径以 **配置文件所在目录** 为基准
 - 每门课会在 `root` 下建一个课程文件夹（命名规则见 `course_dirs`）
-- **命令行 `--root` 参数优先于这里的值**：`bb-sync run --root D:/courses`（仅本次有效）；
-  要永久修改默认目录用 `bb-sync config set root D:/courses`。当前目录有项目配置时，
+- **命令行 `--root` 参数优先于这里的值**：`bb-sync run --root ~/University/courses`（仅本次有效）；
+  要永久修改默认目录用 `bb-sync config set root ~/University/courses`。当前目录有项目配置时，
   它会同时同步到用户级配置，避免换目录后失效；只想改当前文件用 `--no-sync-home`
 
 ## include — 同步范围
@@ -150,7 +161,7 @@ max_depth: 3
 ## 完整示例
 
 ```yaml
-root: D:/University/courses
+root: ~/University/courses
 
 include: [CSC5010, MDS5122]
 
