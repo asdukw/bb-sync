@@ -147,14 +147,28 @@ def categorize(text: str, keywords: dict) -> str:
 
 
 def make_slug(course: Course) -> str:
-    """课程代码 + 标题里的英文关键词，如 CSC5010_AI"""
+    """课程代码 + 标题里的英文关键词，如 CSC5010_Artificial_Intelligence"""
     if not course.code:
         safe = re.sub(r"[^\w\u4e00-\u9fff]+", "_", course.title).strip("_")
         return safe[:40]
     rest = course.title.upper().replace(course.code.upper(), "", 1)
-    words = re.findall(r"[A-Za-z]{3,}", rest)
-    stop = {"THE", "AND", "FOR", "SEMESTER", "FALL", "SPRING", "SUMMER", "SECTION"}
-    key = next((w.capitalize() for w in words if w.upper() not in stop and len(w) >= 4), "")
+    words = re.findall(r"[A-Za-z][A-Za-z-]{2,}", rest)
+    stop = {
+        "THE", "AND", "FOR", "OF", "IN", "WITH", "FROM", "INTO", "USING", "TO",
+        "THEIR", "SEMESTER", "FALL", "SPRING", "SUMMER", "SECTION", "TERM", "PART",
+    }
+    keys: list[str] = []
+    total = 0
+    for w in words:
+        if w.upper() in stop:
+            continue
+        if total + len(w) + 1 > 40:
+            break
+        keys.append(w.strip("-").capitalize())
+        total += len(w) + 1
+        if len(keys) >= 3:
+            break
+    key = "_".join(keys)
     return f"{course.code}_{key}" if key else course.code
 
 
