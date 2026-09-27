@@ -1,14 +1,13 @@
 """探测登录后的课程列表来源：dump 门户页并尝试若干候选接口"""
 
 import re
-from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
 import sync
+from paths import BB_SYNC_HOME
 from steel_backend import connect, create_session, ensure_server, release_session
 
-HERE = Path(__file__).resolve().parent
 PORTAL = "https://bb.cuhk.edu.cn/webapps/portal/execute/tabs/tabAction?tab_tab_group_id=_1_1"
 
 
@@ -23,7 +22,7 @@ def main():
         page.goto(PORTAL, wait_until="domcontentloaded")
         page.wait_for_timeout(4000)
         html_text = page.content()
-        (HERE / "debug_portal.html").write_text(html_text, encoding="utf-8")
+        (BB_SYNC_HOME / "debug_portal.html").write_text(html_text, encoding="utf-8")
         print(f"[dump] 门户页 {len(html_text)} 字节 → debug_portal.html")
 
         for pat in [

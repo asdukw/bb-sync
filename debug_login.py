@@ -1,16 +1,15 @@
 """分步骤调试登录流程：每一步都 dump URL / 可见文本 / 截图"""
 
 import re
-from pathlib import Path
 
 from dotenv import dotenv_values
 from playwright.sync_api import sync_playwright
 
+from paths import BB_SYNC_HOME, find_config_file
 from steel_backend import connect, create_session, ensure_server, release_session
 
-HERE = Path(__file__).resolve().parent
 # 注意：不能用 os.environ 读小写键名，Windows 的 USERNAME 会顶掉 .env 里的 username
-_VALS = dotenv_values(HERE / ".env")
+_VALS = dotenv_values(find_config_file(".env"))
 
 
 def _g(*keys: str) -> str:
@@ -37,8 +36,10 @@ def dump(page, tag: str):
         extra = "\n" + "\n".join(f"    [input] {f}" for f in shown)
     except Exception as e:
         extra = f"\n    (eval failed: {e})"
-    page.screenshot(path=str(HERE / f"debug_{tag}.png"), full_page=True)
-    (HERE / f"debug_{tag}.txt").write_text(f"URL: {url}\n{extra}\n\n{txt}", encoding="utf-8")
+    page.screenshot(path=str(BB_SYNC_HOME / f"debug_{tag}.png"), full_page=True)
+    (BB_SYNC_HOME / f"debug_{tag}.txt").write_text(
+        f"URL: {url}\n{extra}\n\n{txt}", encoding="utf-8"
+    )
     print(f"\n--- [{tag}] URL: {url}{extra}")
     print(f"    text: {txt[:400]}")
 

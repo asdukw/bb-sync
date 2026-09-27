@@ -28,7 +28,7 @@ dev = ["ruff>=0.6", "pyright>=1.1.380"]
 bb-sync = "sync:main"
 
 [tool.setuptools]
-py-modules = ["sync", "steel_backend"]
+py-modules = ["sync", "steel_backend", "paths"]
 
 # ------------------------------------------------------------ 质量门禁
 [tool.ruff]
@@ -42,7 +42,7 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 ignore = ["E501", "SIM108"]
 
 [tool.pyright]
-include = ["sync.py", "steel_backend.py", "debug_login.py", "debug_courses.py", "debug_course.py"]
+include = ["sync.py", "steel_backend.py", "paths.py", "debug_login.py", "debug_courses.py", "debug_course.py"]
 exclude = ["courses", ".steel", ".venv", ".workbuddy", ".browser-profile"]
 typeCheckingMode = "basic"
 pythonVersion = "3.11"

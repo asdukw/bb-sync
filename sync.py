@@ -1,20 +1,21 @@
 """
-bb-sync — CUHK(SZ) Blackboard 课程资源自动同步
-================================================
-登录 bb.cuhk.edu.cn（ADFS SSO），抓取课程列表，自动下载课件/作业/指导
+bb-sync — Blackboard 课程资源自动同步
+======================================
+登录大学 Blackboard 教学平台（ADFS SSO），抓取课程列表，自动下载课件/作业/指导
 到本地课程文件夹（lectures / assignments / tutorials）。
 
 用法：
-    python sync.py              # 增量同步（无头模式，复用已保存的登录态）
-    python sync.py --headed     # 有头模式（首次登录 / 需要人工过 MFA 时用）
-    python sync.py --dry-run    # 只列出将要下载的文件，不实际下载
-    python sync.py --course CSC5010   # 只同步指定课程
+    bb-sync                     # 增量同步（无头模式，复用已保存的登录态）
+    bb-sync --headed            # 有头模式（首次登录 / 需要人工过 MFA 时用）
+    bb-sync --dry-run           # 只列出将要下载的文件，不实际下载
+    bb-sync --course CSC5010    # 只同步指定课程
 """
 
 from __future__ import annotations
 
 import argparse
 import html
+import importlib.metadata as metadata
 import mimetypes
 import re
 import sys
@@ -28,7 +29,13 @@ from dotenv import dotenv_values
 from playwright.sync_api import Page, sync_playwright
 from playwright.sync_api import TimeoutError as PWTimeout
 
+from paths import BB_SYNC_HOME, find_config_file
 from steel_backend import connect, create_session, ensure_server, release_session
+
+try:
+    __version__ = metadata.version("bb-sync")
+except metadata.PackageNotFoundError:  # 源码直跑时
+    __version__ = "0.1.0"
 
 BASE = "https://bb.cuhk.edu.cn"
 # ADFS 页面元素选择器
@@ -36,8 +43,6 @@ ADFS_USER = "input[name='userNameInput'], #userNameInput"
 ADFS_PASS = "input[name='PasswordInput'], #passwordInput"
 ADFS_NEXT = "#nextButton, #submitButton"  # 第一页「下一步」
 ADFS_SUBMIT = "#submitButton, #nextButton, span.submit"  # 密码页「登录」
-HERE = Path(__file__).resolve().parent
-PROFILE_DIR = HERE / ".browser-profile"
 LOGIN_URL = f"{BASE}/webapps/login/"
 
 # ---------------------------------------------------------------- data types
@@ -67,8 +72,8 @@ class FileItem:
 # ---------------------------------------------------------------- helpers
 
 
-def load_config() -> dict:
-    with open(HERE / "config.yaml", encoding="utf-8") as f:
+def load_config(config_path: Path) -> dict:
+    with open(config_path, encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
@@ -78,7 +83,7 @@ def load_credentials() -> tuple[str, str]:
     不走 os.environ：Windows 环境变量名大小写不敏感，系统自带的 USERNAME=xxx
     会顶掉 .env 里的 username；旧键名 username/password 仍兼容。
     """
-    vals = dotenv_values(HERE / ".env")
+    vals = dotenv_values(find_config_file(".env"))
 
     def get(*keys: str) -> str:
         for k in keys:
@@ -190,10 +195,12 @@ def do_login(page: Page, username: str, password: str, headed: bool) -> None:
         if "bb.cuhk.edu.cn" in page.url and "adfs" not in page.url and "sts." not in page.url:
             break
     if not is_logged_in(page):
-        page.screenshot(path=str(HERE / "debug_login.png"), full_page=True)
-        (HERE / "debug_login.html").write_text(page.content(), encoding="utf-8")
+        debug_png = BB_SYNC_HOME / "debug_login.png"
+        debug_html = BB_SYNC_HOME / "debug_login.html"
+        page.screenshot(path=str(debug_png), full_page=True)
+        debug_html.write_text(page.content(), encoding="utf-8")
         log(f"[debug] 当前 URL: {page.url}")
-        log("[debug] 已保存截图 debug_login.png 与页面源码 debug_login.html")
+        log(f"[debug] 已保存截图 {debug_png.name} 与页面源码 {debug_html.name}（{BB_SYNC_HOME}）")
         raise RuntimeError(
             "登录失败：请检查 .env 中的凭据，或是否有 MFA/验证码。\n"
             f"(当前 URL: {page.url})\n"
@@ -494,19 +501,32 @@ def scrape_announcements(page: Page, course: Course, course_dir: Path, dry_run: 
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Blackboard 课程资源同步")
+    ap = argparse.ArgumentParser(
+        prog="bb-sync", description="Blackboard 课程资源自动同步（ADFS SSO + Steel）"
+    )
     ap.add_argument("--headed", action="store_true", help="有头模式（首次登录/MFA 用）")
     ap.add_argument("--dry-run", action="store_true", help="只列出文件，不下载")
     ap.add_argument("--course", action="append", help="只同步指定课程代码（可多次）")
+    ap.add_argument(
+        "--config",
+        help="配置文件路径（默认：当前目录 config.yaml，其次 ~/.bb-sync/config.yaml）",
+    )
+    ap.add_argument("--version", action="version", version=f"bb-sync {__version__}")
     args = ap.parse_args()
 
-    cfg = load_config()
+    config_path = Path(args.config).expanduser() if args.config else find_config_file("config.yaml")
+    if not config_path.exists():
+        raise SystemExit(
+            f"未找到配置文件：{config_path}\n"
+            "请把仓库里的 config.yaml 复制到当前目录或 ~/.bb-sync/ 下再运行。"
+        )
+    cfg = load_config(config_path)
     keywords = cfg.get("keywords", {})
     max_depth = int(cfg.get("max_depth", 3))
 
     root = Path(cfg.get("root", "~/courses")).expanduser()
-    if not root.is_absolute():
-        root = (HERE / root).resolve()
+    if not root.is_absolute():  # 相对路径以配置文件所在目录为基准
+        root = (config_path.parent / root).resolve()
     root.mkdir(parents=True, exist_ok=True)
 
     include = args.course if args.course else cfg.get("include", "all")

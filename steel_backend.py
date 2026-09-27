@@ -17,11 +17,12 @@ import time
 from pathlib import Path
 from urllib import error, request
 
-HERE = Path(__file__).resolve().parent
-STEEL_DIR = HERE / ".steel" / "api"
-STEEL_LOG = HERE / ".steel" / "steel.log"
+from paths import BB_SYNC_HOME
+
+STEEL_DIR = BB_SYNC_HOME / ".steel" / "api"
+STEEL_LOG = BB_SYNC_HOME / ".steel" / "steel.log"
 STEEL_URL = os.environ.get("STEEL_URL", "http://127.0.0.1:3000")
-PROFILE_DIR = HERE / ".browser-profile" / "steel-chrome"
+PROFILE_DIR = BB_SYNC_HOME / ".browser-profile" / "steel-chrome"
 
 IS_WIN = sys.platform.startswith("win")
 
@@ -65,7 +66,7 @@ def start_server(headed: bool, wait: int = 120) -> None:
     if not STEEL_DIR.exists():
         raise RuntimeError(
             f"Steel 源码缺失: {STEEL_DIR}\n请先执行: git clone --depth 1 "
-            f"https://github.com/steel-dev/steel-browser .steel"
+            f'https://github.com/steel-dev/steel-browser "{BB_SYNC_HOME / ".steel"}"'
         )
     # npm workspaces 会把依赖提升到 .steel/node_modules
     tsx = next(

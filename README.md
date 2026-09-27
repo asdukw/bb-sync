@@ -11,42 +11,64 @@
 > 与 Blackboard Inc. 及任何高校官方均无关联。下载的课程资料版权归原作者与学校所有，
 > 请勿二次分发。
 
-## 首次配置
+## 安装
 
-依赖管理使用 [uv](https://docs.astral.sh/uv/)（不污染系统 Python 环境）：
+依赖管理使用 [uv](https://docs.astral.sh/uv/)（不污染系统 Python 环境）。
 
 ```powershell
 # 1. 安装 uv（二选一）
 choco install uv          # 或: powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 
-# 2. 克隆后进入目录，一条命令建好环境（自动创建 .venv 并装依赖）
-uv sync
+# 2a. 安装为全局 CLI 命令（推荐）
+uv tool install git+https://github.com/asdukw/bb-sync
+# 或本地克隆后可编辑安装（跟随本地修改）：
+#   git clone https://github.com/asdukw/bb-sync && cd bb-sync
+#   uv tool install -e .
 
-# 3. 复制凭据模板并填入学号和密码
-Copy-Item .env.example .env
-notepad .env              # STUDENT_ID 填「学号」（ADFS 提示：学生=学号，教职工=邮箱前缀）
+# 2b. 或者不安装，源码直跑：cd bb-sync && uv sync
+```
 
-# 4. 部署 Steel 后端（仅首次，之后无需重复）
-git clone --depth 1 https://github.com/steel-dev/steel-browser .steel
-cd .steel\api
+## 首次配置
+
+所有用户配置与运行时数据统一放在 `~/.bb-sync/`（可用环境变量 `BB_SYNC_HOME` 覆盖）：
+
+```powershell
+# 1. 准备配置目录
+mkdir ~/.bb-sync
+Copy-Item config.yaml ~/.bb-sync/     # 源码直跑且在项目目录内运行时可跳过（自动读当前目录）
+notepad ~/.bb-sync/config.yaml
+
+# 2. 凭据：复制模板并填入学号和密码
+Copy-Item .env.example ~/.bb-sync/.env
+notepad ~/.bb-sync/.env   # STUDENT_ID 填「学号」（ADFS 提示：学生=学号，教职工=邮箱前缀）
+
+# 3. 部署 Steel 后端（仅首次，之后无需重复）
+git clone --depth 1 https://github.com/steel-dev/steel-browser "$env:USERPROFILE\.bb-sync\.steel"
+cd "$env:USERPROFILE\.bb-sync\.steel\api"
 npm install
-cd ..\..
+cd -
 # 若 Steel 未装依赖会报错提示；Chrome 路径与静默开关在 .steel/api/.env 中
 ```
+
+> `config.yaml` 与 `.env` 放**当前工作目录**优先于 `~/.bb-sync/`，方便多学校/多账号并存。
 
 ## 日常使用
 
 ```powershell
-uv run python sync.py                  # 增量同步全部课程（静默后台）
-uv run python sync.py --course CSC5010 # 只同步一门课
-uv run python sync.py --dry-run        # 预览会下载什么，不实际下载
-uv run python sync.py --headed         # 需要人工过 MFA 时（弹出可见窗口）
+bb-sync                     # 增量同步全部课程（静默后台）
+bb-sync --course CSC5010    # 只同步一门课
+bb-sync --dry-run           # 预览会下载什么，不实际下载
+bb-sync --headed            # 需要人工过 MFA 时（弹出可见窗口）
+bb-sync --version
 ```
+
+源码直跑则把 `bb-sync` 换成 `uv run python sync.py`。
 
 - 课程文件默认下载到 **用户主目录下的 `courses/`**（如 `C:\Users\<你>\courses`），
   可在 `config.yaml` 的 `root` 里改
-- Steel 服务端会在需要时自动以后台进程启动（`127.0.0.1:3000`），日志在 `.steel/steel.log`
-- 登录态保存在 `.browser-profile/steel-chrome`（持久 Chrome profile），无需每次登录
+- Steel 服务端会在需要时自动以后台进程启动（`127.0.0.1:3000`），日志在 `~/.bb-sync/.steel/steel.log`
+- 登录态保存在 `~/.bb-sync/.browser-profile/steel-chrome`（持久 Chrome profile），无需每次登录
+- 登录失败的调试截图/源码写入 `~/.bb-sync/debug_login.*`
 - 本机回环已自动绕过系统代理，无需额外配置
 
 ## 文件落盘规则

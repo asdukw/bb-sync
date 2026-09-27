@@ -2,14 +2,13 @@
 
 import re
 import sys
-from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
 import sync
+from paths import BB_SYNC_HOME
 from steel_backend import connect, create_session, ensure_server, release_session
 
-HERE = Path(__file__).resolve().parent
 COURSE_ID = sys.argv[1] if len(sys.argv) > 1 else "_18482_1"  # CSC5010
 
 
@@ -37,7 +36,7 @@ def main():
                 print(f"[{label}] goto 失败: {e}")
                 continue
             html_text = page.content()
-            (HERE / f"debug_course_{label}.html").write_text(html_text, encoding="utf-8")
+            (BB_SYNC_HOME / f"debug_course_{label}.html").write_text(html_text, encoding="utf-8")
             print(f"\n=== {label} === url={page.url} size={len(html_text)}")
             for pat in [
                 "listContent.jsp",
