@@ -89,7 +89,10 @@ def start_server(headed: bool, wait: int = 120) -> None:
     logf = open(STEEL_LOG, "a", encoding="utf-8")  # noqa: SIM115
     flags = 0
     if IS_WIN:
-        flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        # Windows 专属创建标志（POSIX 类型存根中不存在，用 getattr 兜底通过跨平台类型检查）
+        flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+        )
     subprocess.Popen(
         [_node_bin(), str(tsx), "src/index.ts"],
         cwd=str(STEEL_DIR),
