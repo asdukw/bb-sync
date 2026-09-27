@@ -25,16 +25,24 @@ from bb_sync.core.errors import EnvironmentError_, NetworkError
 from bb_sync.core.output import Console
 
 
-def _resolve_steel_root() -> Path:
-    """Steel 安装根目录：默认 ``~/.steel``，可用 ``BB_SYNC_STEEL_ROOT`` 覆盖。"""
-    override = os.environ.get("BB_SYNC_STEEL_ROOT")
-    return Path(override).expanduser() if override else Path.home() / ".steel"
+def _steel_meta_path(root: Path | None = None) -> Path:
+    """部署元数据路径（默认当前安装根目录）。"""
+    return (root or STEEL_ROOT) / ".bb-sync.json"
 
 
-# Steel 安装目录固定在用户主目录的 ~/.steel，不跟随 BB_SYNC_HOME：
-# 不同版本、不同配置目录共用同一份后端，避免用户主目录出现多个 .steel。
-# 旧版 BB_SYNC_HOME/.steel 会在 deploy() 时自动迁移/清理。
-STEEL_ROOT = _resolve_steel_root()
+def _read_steel_meta() -> dict[str, object]:
+    """读部署元数据；缺失/损坏时返回空字典。"""
+    try:
+        data = json.loads(_steel_meta_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+# Steel 后端装在 BB_SYNC_HOME/.steel（默认 ~/.bb-sync/.steel），跟随配置目录；
+# 用户家目录里的 ~/.steel 与我们无关，任何时候都不读取、不写入、不迁移。
+# 路径在模块导入时快照；需要换目录请通过 BB_SYNC_HOME 在启动前设置。
+STEEL_ROOT = paths.BB_SYNC_HOME / ".steel"
 STEEL_DIR = STEEL_ROOT / "api"
 STEEL_LOG = STEEL_ROOT / "steel.log"
 STEEL_URL = os.environ.get("STEEL_URL", "http://127.0.0.1:3000")
@@ -108,63 +116,13 @@ def detect_browser() -> str | None:
     return next((c for c in candidates if Path(c).exists()), None)
 
 
-def _legacy_steel_root() -> Path:
-    """1.0.x 及更早版本的 Steel 安装目录（``BB_SYNC_HOME/.steel``）。"""
-    return paths.BB_SYNC_HOME / ".steel"
-
-
-def _migrate_legacy_root(console: Console) -> bool:
-    """把旧版 ``BB_SYNC_HOME/.steel`` 迁到新根目录，返回是否迁移成功。
-
-    只在新目录不存在时迁移，绝不覆盖用户已有安装；迁移失败不抛错，
-    后续正常部署会重新下载，避免因旧目录损坏/被占用而无法启动。
-    """
-    legacy = _legacy_steel_root()
-    if legacy == STEEL_ROOT or not legacy.exists() or STEEL_ROOT.exists():
-        return False
-    try:
-        STEEL_ROOT.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(legacy), str(STEEL_ROOT))
-    except OSError as exc:
-        console.warn(f"[steel] 迁移旧安装目录失败（将重新部署）: {exc}")
-        return False
-    console.log(f"[steel] 已迁移旧安装目录: {legacy} -> {STEEL_ROOT}")
-    return True
-
-
-def _cleanup_legacy_root(console: Console) -> None:
-    """新安装就绪后清理旧目录，确保电脑里只保留一份 Steel。"""
-    legacy = _legacy_steel_root()
-    if legacy == STEEL_ROOT or not legacy.exists():
-        return
-    try:
-        shutil.rmtree(legacy)
-    except OSError as exc:
-        console.warn(f"[steel] 旧安装目录清理失败（可手动删除 {legacy}）: {exc}")
-        return
-    console.log(f"[steel] 已清理旧安装目录: {legacy}")
-
-
 def is_deployed() -> bool:
     """Steel 后端是否已就绪（源码 + tsx 依赖都在）。"""
     return (STEEL_DIR / "src" / "index.ts").exists() and _find_tsx() is not None
 
 
-def _steel_meta_path() -> Path:
-    """部署元数据：标记 ``~/.steel`` 由 bb-sync 安装，并记录源码地址。"""
-    return STEEL_ROOT / ".bb-sync.json"
-
-
-def _read_steel_meta() -> dict[str, object]:
-    try:
-        data = json.loads(_steel_meta_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
 def _write_steel_meta(console: Console, *, steel_ref: str | None = STEEL_REF) -> None:
-    """写安装元数据；``steel_ref=None`` 表示沿用旧安装、具体修订未知。"""
+    """记录安装来源与锚点；``steel_ref=None`` 表示沿用旧安装、具体修订未知。"""
     payload = {
         "tool": "bb-sync",
         "schema": 1,
@@ -187,7 +145,7 @@ def _needs_upgrade() -> bool:
 
 
 def installed_ref() -> str | None:
-    """已安装源码的锚点（1.0.2 起写入元数据；用户自带或无元数据的安装返回 None）。"""
+    """已安装源码的锚点（无元数据的旧安装返回 None）。"""
     ref = _read_steel_meta().get("steel_ref")
     return ref if isinstance(ref, str) and ref else None
 
@@ -201,19 +159,6 @@ def _unique_backup_path(kind: str) -> Path:
         candidate = STEEL_ROOT.with_name(f"{base}-{seq}")
         seq += 1
     return candidate
-
-
-def _quarantine_broken_root(console: Console) -> None:
-    """残缺/损坏的目录不直接删：整体改名备份，保留排查线索。"""
-    backup = _unique_backup_path("broken")
-    try:
-        shutil.move(str(STEEL_ROOT), str(backup))
-    except OSError as exc:
-        raise EnvironmentError_(
-            f"Steel 目录不可用且无法重命名: {STEEL_ROOT}",
-            "请先关闭正在运行的 Steel/Node 进程后重试；也可手动删除该目录",
-        ) from exc
-    console.warn(f"[steel] 检测到不可用的旧目录，已备份为: {backup}")
 
 
 def _extracted_root(tmp_dir: Path) -> Path:
@@ -320,33 +265,23 @@ def _install_dependencies(npm: str, console: Console) -> None:
 def deploy(console: Console = _SILENT) -> None:
     """自动部署 Steel 后端：下载源码包 + 安装 npm 依赖（首次运行自动触发）。
 
-    已存在的 ``~/.steel`` 按状态处理，绝不静默删除用户文件：
-
-    - 就绪（源码 + tsx 依赖都在）→ 直接复用，跳过下载与安装
-    - bb-sync 装的旧版本（元数据里的源码地址与当前不一致）→ 下载后原地更新
-    - 残缺/损坏 → 备份为 ``.steel.broken-<时间戳>`` 后重装
-    - 旧版 ``BB_SYNC_HOME/.steel`` → 自动迁移复用，随后清理旧目录；
-      ``~/.steel`` 不可用时优先回退到它，两处都不可用才重新下载
+    - 已就绪且锚点一致（源码 + tsx 依赖都在）→ 直接复用，跳过下载与安装
+    - 锚点变化（bb-sync 升级了验证过的 Steel 版本）→ 先下载，成功后再替换
+    - 残缺（上次安装中断等）→ 换入新目录成功后就地替换，不留残余
+    - 安装目录固定在 ``BB_SYNC_HOME/.steel``；用户家目录的 ``~/.steel`` 不碰
 
     源码走 codeload zip（不依赖 git）；依赖安装在 ``.steel/api``
     （npm workspaces 自动提升到 ``.steel/node_modules``）。
     """
-    if STEEL_ROOT.exists() and not is_deployed():
-        _quarantine_broken_root(console)
-    migrated = _migrate_legacy_root(console)
-    if migrated and not is_deployed():
-        # 旧目录本身也不可用：同样备份保留，再走全新下载
-        _quarantine_broken_root(console)
-
     if is_deployed():
         if not _needs_upgrade():
             console.log(f"[steel] 复用已就绪的后端: {STEEL_ROOT}")
-            if migrated and not _read_steel_meta():
-                # 旧版安装补记归属（它来自我们自己的目录，但具体修订未知）
+            if not _read_steel_meta():
+                # 1.0.1 及更早装的没有元数据：补记归属（具体修订未知），
+                # 以后我们升级 STEEL_REF 时会走「先下载再替换」的平滑更新
                 _write_steel_meta(console, steel_ref=None)
-            _cleanup_legacy_root(console)
             return
-        console.log(f"[steel] 检测到 bb-sync 安装的旧版本，准备更新: {STEEL_ROOT}")
+        console.log(f"[steel] 检测到旧的 Steel 快照，准备更新: {STEEL_ROOT}")
 
     _node_bin()  # 提前给出友好的 Node.js 缺失提示
     npm = _npm_bin()
@@ -373,12 +308,11 @@ def deploy(console: Console = _SILENT) -> None:
     if old_root is not None:
         shutil.rmtree(old_root, ignore_errors=True)
     _write_steel_meta(console)
-    _cleanup_legacy_root(console)
     console.success("Steel 后端部署完成")
 
 
 def _find_tsx() -> Path | None:
-    """tsx 可执行入口：npm workspaces 会把依赖提升到 ``~/.steel/node_modules``。"""
+    """tsx 可执行入口：npm workspaces 会把依赖提升到安装目录的 node_modules。"""
     return next(
         (
             d / "node_modules" / "tsx" / "dist" / "cli.mjs"

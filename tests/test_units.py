@@ -363,6 +363,16 @@ def _forbid_node(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(steel, "_node_bin", no_node)
 
 
+def _write_old_anchor_meta(root: Path) -> None:
+    """把安装标记成「旧锚点」，触发一次替换更新。"""
+    import json
+
+    (root / ".bb-sync.json").write_text(
+        json.dumps({"tool": "bb-sync", "schema": 1, "zip_url": "https://example.com/old.zip"}),
+        encoding="utf-8",
+    )
+
+
 def _stub_fresh_install(monkeypatch: pytest.MonkeyPatch, marker: str) -> dict[str, int]:
     """把下载与 npm 安装替换成本地假安装，并统计调用次数。"""
     from bb_sync.browser import steel
@@ -371,7 +381,7 @@ def _stub_fresh_install(monkeypatch: pytest.MonkeyPatch, marker: str) -> dict[st
 
     def fake_download(console, tmp_dir: Path) -> Path:
         calls["download"] += 1
-        source = tmp_dir / "steel-browser-main"
+        source = tmp_dir / f"steel-browser-{steel.STEEL_REF}"
         _fake_steel_install(source, marker)
         return source
 
@@ -385,21 +395,13 @@ def _stub_fresh_install(monkeypatch: pytest.MonkeyPatch, marker: str) -> dict[st
     return calls
 
 
-def test_steel_root_defaults_to_user_home(monkeypatch, tmp_path: Path) -> None:
+def test_steel_root_is_inside_bb_sync_home() -> None:
+    """Steel 装在 BB_SYNC_HOME/.steel，不碰用户家目录的 ~/.steel。"""
+    from bb_sync import paths
     from bb_sync.browser import steel
 
-    fake_home = tmp_path / "home"
-    monkeypatch.delenv("BB_SYNC_STEEL_ROOT", raising=False)
-    monkeypatch.setattr(Path, "home", lambda: fake_home)
-    assert steel._resolve_steel_root() == fake_home / ".steel"
-
-
-def test_steel_root_honors_env_override(monkeypatch, tmp_path: Path) -> None:
-    from bb_sync.browser import steel
-
-    custom = tmp_path / "custom-steel"
-    monkeypatch.setenv("BB_SYNC_STEEL_ROOT", str(custom))
-    assert steel._resolve_steel_root() == custom
+    assert steel.STEEL_ROOT == paths.BB_SYNC_HOME / ".steel"
+    assert steel.STEEL_ROOT.parent == paths.BB_SYNC_HOME
 
 
 def test_steel_zip_url_is_pinned_to_commit() -> None:
@@ -418,7 +420,7 @@ def test_steel_extracted_root_allows_any_ref_name(tmp_path: Path) -> None:
     from bb_sync.browser import steel
 
     tmp_dir = tmp_path / "tmp"
-    extracted = tmp_dir / "steel-browser-dacea7e217ccded0d3886b8771a0ae52d254552c"
+    extracted = tmp_dir / f"steel-browser-{steel.STEEL_REF}"
     extracted.mkdir(parents=True)
     (tmp_dir / "steel-browser.zip").write_text("zip", encoding="utf-8")  # 压缩包本身不算目录
 
@@ -434,74 +436,54 @@ def test_steel_extracted_root_allows_any_ref_name(tmp_path: Path) -> None:
         steel._extracted_root(empty)
 
 
-def test_steel_deploy_migrates_legacy_install(monkeypatch, tmp_path: Path) -> None:
-    from bb_sync import paths
+def test_steel_deploy_reuses_ready_install(monkeypatch, tmp_path: Path) -> None:
+    """已就绪且锚点一致：直接复用，不查 Node、不触网；旧安装补记归属但不谎报修订。"""
     from bb_sync.browser import steel
 
-    legacy = paths.BB_SYNC_HOME / ".steel"
-    new_root = tmp_path / "home" / ".steel"
-    _fake_steel_install(legacy, "legacy")
-    _point_steel_at(monkeypatch, new_root)
+    root = tmp_path / "home" / ".bb-sync" / ".steel"
+    _fake_steel_install(root, "ready")
+    _point_steel_at(monkeypatch, root)
     _forbid_node(monkeypatch)
 
     steel.deploy(steel._SILENT)
 
-    assert not legacy.exists()
-    assert (new_root / "marker.txt").read_text(encoding="utf-8") == "legacy"
-    assert steel.is_deployed()
-    # 迁移过来的旧安装补记归属标记，将来能识别是否由 bb-sync 安装；
-    # 但具体修订未知，不谎报锚点
+    assert (root / "marker.txt").read_text(encoding="utf-8") == "ready"
     assert steel._read_steel_meta()["zip_url"] == steel.STEEL_ZIP_URL
     assert steel.installed_ref() is None
 
 
-def test_steel_deploy_reuses_complete_install(monkeypatch, tmp_path: Path) -> None:
-    """已有 ~/.steel 且完整可用：直接复用，仅清理旧版遗留目录。"""
-    from bb_sync import paths
-    from bb_sync.browser import steel
-
-    legacy = paths.BB_SYNC_HOME / ".steel"
-    new_root = tmp_path / "home" / ".steel"
-    _fake_steel_install(legacy, "legacy")
-    _fake_steel_install(new_root, "new")
-    _point_steel_at(monkeypatch, new_root)
-    _forbid_node(monkeypatch)
-
-    steel.deploy(steel._SILENT)
-
-    assert (new_root / "marker.txt").read_text(encoding="utf-8") == "new"
-    assert not legacy.exists()
-
-
-def test_steel_deploy_keeps_foreign_install_unmanaged(monkeypatch, tmp_path: Path) -> None:
-    """没有 bb-sync 元数据的完整安装视为用户自己的：复用且不写入标记。"""
-    from bb_sync.browser import steel
-
-    root = tmp_path / "home" / ".steel"
-    _fake_steel_install(root, "mine")
-    _point_steel_at(monkeypatch, root)
-    _forbid_node(monkeypatch)
-
-    steel.deploy(steel._SILENT)
-
-    assert (root / "marker.txt").read_text(encoding="utf-8") == "mine"
-    assert not steel._steel_meta_path().exists()
-    assert steel.installed_ref() is None
-
-
-def test_steel_deploy_upgrades_outdated_managed_install(monkeypatch, tmp_path: Path) -> None:
-    """带 bb-sync 元数据的旧版本：自动更新，更新后再次运行直接复用。"""
+def test_steel_deploy_keeps_recorded_ref_on_reuse(monkeypatch, tmp_path: Path) -> None:
+    """已记录锚点的安装复用时不改写元数据（doctor 显示的版本保持准确）。"""
     import json
 
     from bb_sync.browser import steel
 
-    root = tmp_path / "home" / ".steel"
-    _fake_steel_install(root, "old")
+    root = tmp_path / "home" / ".bb-sync" / ".steel"
+    _fake_steel_install(root, "ready")
     _point_steel_at(monkeypatch, root)
-    (root / ".bb-sync.json").write_text(
-        json.dumps({"tool": "bb-sync", "schema": 1, "zip_url": "https://example.com/old.zip"}),
-        encoding="utf-8",
-    )
+    recorded = {
+        "tool": "bb-sync",
+        "schema": 1,
+        "steel_ref": steel.STEEL_REF,
+        "zip_url": steel.STEEL_ZIP_URL,
+        "recorded_at": "2026-09-28T00:00:00+0800",
+    }
+    steel._steel_meta_path().write_text(json.dumps(recorded), encoding="utf-8")
+    _forbid_node(monkeypatch)
+
+    steel.deploy(steel._SILENT)
+
+    assert steel._read_steel_meta()["recorded_at"] == "2026-09-28T00:00:00+0800"
+
+
+def test_steel_deploy_updates_old_anchor(monkeypatch, tmp_path: Path) -> None:
+    """锚点变化：先下载再替换，成功后才删旧目录；之后直接复用。"""
+    from bb_sync.browser import steel
+
+    root = tmp_path / "home" / ".bb-sync" / ".steel"
+    _fake_steel_install(root, "old")
+    _write_old_anchor_meta(root)
+    _point_steel_at(monkeypatch, root)
     calls = _stub_fresh_install(monkeypatch, "fresh")
 
     steel.deploy(steel._SILENT)
@@ -517,11 +499,58 @@ def test_steel_deploy_upgrades_outdated_managed_install(monkeypatch, tmp_path: P
     assert calls == {"download": 1, "npm": 1}
 
 
-def test_steel_deploy_backs_up_broken_install(monkeypatch, tmp_path: Path) -> None:
-    """残缺的 ~/.steel 不直接删：备份为 .steel.broken-* 后重新安装。"""
+def test_steel_deploy_keeps_install_when_download_fails(monkeypatch, tmp_path: Path) -> None:
+    """下载失败（网络问题）时旧安装原样保留，不会先删再装。"""
     from bb_sync.browser import steel
 
-    root = tmp_path / "home" / ".steel"
+    root = tmp_path / "home" / ".bb-sync" / ".steel"
+    _fake_steel_install(root, "old")
+    _write_old_anchor_meta(root)
+    _point_steel_at(monkeypatch, root)
+
+    def no_network(console, tmp_dir: Path) -> Path:
+        raise NetworkError("下载失败")
+
+    monkeypatch.setattr(steel, "_download_source", no_network)
+    monkeypatch.setattr(steel, "_node_bin", lambda: "/fake/node")
+    monkeypatch.setattr(steel, "_npm_bin", lambda: "/fake/npm")
+
+    with pytest.raises(NetworkError):
+        steel.deploy(steel._SILENT)
+
+    assert (root / "marker.txt").read_text(encoding="utf-8") == "old"
+    assert steel.is_deployed()
+    assert not list(root.parent.glob(".steel.old-*"))
+
+
+def test_steel_deploy_rolls_back_when_install_fails(monkeypatch, tmp_path: Path) -> None:
+    """依赖装坏时回滚：旧安装恢复原位，下次运行仍可用。"""
+    from bb_sync.browser import steel
+
+    root = tmp_path / "home" / ".bb-sync" / ".steel"
+    _fake_steel_install(root, "old")
+    _write_old_anchor_meta(root)
+    _point_steel_at(monkeypatch, root)
+    _stub_fresh_install(monkeypatch, "fresh")
+
+    def fail_install(npm: str, console) -> None:
+        raise EnvironmentError_("npm install 失败", "看日志")
+
+    monkeypatch.setattr(steel, "_install_dependencies", fail_install)
+
+    with pytest.raises(EnvironmentError_):
+        steel.deploy(steel._SILENT)
+
+    assert (root / "marker.txt").read_text(encoding="utf-8") == "old"
+    assert steel.is_deployed()
+    assert not list(root.parent.glob(".steel.old-*"))
+
+
+def test_steel_deploy_reinstalls_broken_install(monkeypatch, tmp_path: Path) -> None:
+    """残缺目录（上次安装中断）：重新安装，残余随替换清掉。"""
+    from bb_sync.browser import steel
+
+    root = tmp_path / "home" / ".bb-sync" / ".steel"
     (root / "api").mkdir(parents=True)  # 上次安装中断留下的空壳
     (root / "leftover.txt").write_text("half-downloaded", encoding="utf-8")
     _point_steel_at(monkeypatch, root)
@@ -529,61 +558,11 @@ def test_steel_deploy_backs_up_broken_install(monkeypatch, tmp_path: Path) -> No
 
     steel.deploy(steel._SILENT)
 
-    backups = list(root.parent.glob(".steel.broken-*"))
-    assert len(backups) == 1
-    assert (backups[0] / "leftover.txt").read_text(encoding="utf-8") == "half-downloaded"
     assert calls == {"download": 1, "npm": 1}
     assert (root / "marker.txt").read_text(encoding="utf-8") == "fresh"
+    assert not (root / "leftover.txt").exists()
+    assert not list(root.parent.glob(".steel.old-*"))
     assert steel.installed_ref() == steel.STEEL_REF
-    assert steel.is_deployed()
-
-
-def test_steel_deploy_prefers_legacy_over_broken_new_root(monkeypatch, tmp_path: Path) -> None:
-    """~/.steel 残缺而旧目录完整：备份残缺目录，迁移复用旧安装。"""
-    from bb_sync import paths
-    from bb_sync.browser import steel
-
-    legacy = paths.BB_SYNC_HOME / ".steel"
-    new_root = tmp_path / "home" / ".steel"
-    _fake_steel_install(legacy, "legacy")
-    new_root.mkdir(parents=True)
-    (new_root / "leftover.txt").write_text("half-downloaded", encoding="utf-8")
-    _point_steel_at(monkeypatch, new_root)
-    _forbid_node(monkeypatch)
-
-    steel.deploy(steel._SILENT)
-
-    assert (new_root / "marker.txt").read_text(encoding="utf-8") == "legacy"
-    assert not legacy.exists()
-    assert len(list(new_root.parent.glob(".steel.broken-*"))) == 1
-
-
-def test_steel_deploy_backs_up_both_broken_roots(monkeypatch, tmp_path: Path) -> None:
-    """新旧两个目录都残缺：各自备份，再全新下载安装。"""
-    from bb_sync import paths
-    from bb_sync.browser import steel
-
-    legacy = paths.BB_SYNC_HOME / ".steel"
-    new_root = tmp_path / "home" / ".steel"
-    legacy.mkdir(parents=True)
-    (legacy / "legacy-leftover.txt").write_text("legacy", encoding="utf-8")
-    new_root.mkdir(parents=True)
-    (new_root / "new-leftover.txt").write_text("new", encoding="utf-8")
-    _point_steel_at(monkeypatch, new_root)
-    calls = _stub_fresh_install(monkeypatch, "fresh")
-
-    steel.deploy(steel._SILENT)
-
-    leftovers = {
-        f.read_text(encoding="utf-8")
-        for backup in new_root.parent.glob(".steel.broken-*")
-        for f in backup.glob("*leftover.txt")
-    }
-    assert leftovers == {"legacy", "new"}
-    assert not legacy.exists()
-    assert calls == {"download": 1, "npm": 1}
-    assert (new_root / "marker.txt").read_text(encoding="utf-8") == "fresh"
-    assert steel.is_deployed()
 
 
 # ---------------------------------------------------------------- 抓取辅助函数

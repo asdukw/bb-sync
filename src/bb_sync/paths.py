@@ -1,9 +1,8 @@
 """路径解析：兼容「源码运行」与「安装为 CLI」两种形态。
 
 用户文件（config.yaml）查找顺序：当前工作目录优先（项目内用法），
-其次 ~/.bb-sync/（安装后的用户配置目录）。浏览器 profile、日志、调试产物
-放 ~/.bb-sync/，可用环境变量 BB_SYNC_HOME 覆盖；Steel 后端固定安装在
-~/.steel/，不跟随 BB_SYNC_HOME，避免不同环境产生多份 .steel。
+其次 ~/.bb-sync/（安装后的用户配置目录）。运行时目录（Steel、浏览器
+profile、日志、调试产物）统一放 ~/.bb-sync/，可用环境变量 BB_SYNC_HOME 覆盖。
 """
 
 from __future__ import annotations

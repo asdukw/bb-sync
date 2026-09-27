@@ -98,17 +98,12 @@ bb-sync run --headed
 
 - 从 GitHub 下载 Steel 源码（固定在我们验证过的快照，不跟随上游 `main` 漂移）；
 - 使用 npm 安装 Steel 依赖；
-- 把 Steel 后端固定装在家目录的 `~/.steel`（不随 `BB_SYNC_HOME` 变化，升级后不会多出第二份）；
-- 把安装和启动日志写在 `~/.steel/steel.log`。
+- 装到 `~/.bb-sync/.steel`（随 `BB_SYNC_HOME` 走，不会碰家目录的 `~/.steel`）；
+- 把安装和启动日志写在 `~/.bb-sync/.steel/steel.log`。
 
 此过程可能需要几分钟，并且需要同时访问 GitHub 和 npm registry。`bb-sync doctor` 目前只检查 GitHub 连通性，不能代替 npm registry 检查。
 
-如果 `~/.steel` 已经存在，bb-sync 不会盲目重装或删除：
-
-- **完整可用**（源码与 tsx 依赖齐全）→ 直接复用，跳过下载和安装；
-- **bb-sync 安装的旧版本** → 自动更新（先下载新源码，成功后再替换）；
-- **残缺**（上次安装中断等）→ 先改名为 `~/.steel.broken-<时间戳>` 备份；若旧位置 `~/.bb-sync/.steel` 还有可用安装就直接迁移复用，两处都不可用才重新下载；
-- **1.0.1 及更早的 `~/.bb-sync/.steel`** → 自动迁移到 `~/.steel`，并清理旧目录。
+已就绪的安装会直接复用；当 bb-sync 升级了验证过的 Steel 快照时，会先下载新源码、成功后再替换，中途失败自动回滚旧版本（不会先把能用的删掉）。
 
 ### 3. 之后使用增量同步
 
@@ -188,7 +183,7 @@ bb-sync config edit
 
 - **`bb-sync` 找不到**：重开终端，执行 `uv tool update-shell`，然后运行 `uv tool list`。
 - **环境依赖缺失**：运行 `bb-sync doctor`，按提示安装或配置 Git、Node.js、npm 和浏览器。
-- **首次运行很慢或卡住**：检查 GitHub 和 npm registry 网络；国内网络可开启系统代理。详细日志见 `~/.steel/steel.log`。
+- **首次运行很慢或卡住**：检查 GitHub 和 npm registry 网络；国内网络可开启系统代理。详细日志见 `~/.bb-sync/.steel/steel.log`。
 - **登录失败或需要 MFA**：运行 `bb-sync auth status` 查看凭据，再运行 `bb-sync run --headed`。如果之前已经启动过普通模式，先关闭残留的 Steel/Node 后端，再使用有头模式。
 - **忘记修改了哪个配置**：运行 `bb-sync config path`，然后检查该文件。
 - **想更换密码**：运行 `bb-sync auth login` 覆盖原凭据。
@@ -209,9 +204,7 @@ uv tool uninstall bb-sync
 
 以下目录可能含有个人数据，删除前请确认：
 
-- `~/.bb-sync/`：用户配置、浏览器 profile、日志和调试产物；
-- `~/.steel/`：Steel 浏览器后端，删除后下次运行会自动重装；
-- `~/.steel.broken-*`：安装中断时自动保留的旧目录备份，确认无用后可删除；
+- `~/.bb-sync/`：用户配置、Steel 后端、浏览器 profile、日志和调试产物；
 - 当前目录的 `config.yaml`：可能覆盖用户配置；
 - `~/courses/`：默认课程下载目录。
 

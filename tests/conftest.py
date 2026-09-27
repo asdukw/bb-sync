@@ -74,10 +74,8 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Pa
         if key.startswith("BB_SYNC_"):
             monkeypatch.delenv(key, raising=False)
 
-    # Steel 安装目录默认在 ~/.steel，不跟随 BB_SYNC_HOME；同样隔离到临时目录，
-    # 防止测试误操作真实安装目录。
-    steel_root = tmp_path / ".steel"
-    monkeypatch.setenv("BB_SYNC_STEEL_ROOT", str(steel_root))
+    # Steel 装在 BB_SYNC_HOME/.steel；显式对齐模块常量，避免测试碰真实安装目录。
+    steel_root = home / ".steel"
     from bb_sync.browser import steel
 
     monkeypatch.setattr(steel, "STEEL_ROOT", steel_root)
