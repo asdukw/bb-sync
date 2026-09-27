@@ -11,12 +11,32 @@
   `--config <路径>` 可以指定任意配置文件
 - **环境变量**：整个运行时目录（配置、浏览器数据等）可用 `BB_SYNC_HOME` 重定向
 
+## 配置优先级
+
+一个配置项的值按以下顺序确定，**上面覆盖下面**：
+
+```
+1. 命令行参数      bb-sync run --root D:/courses
+2. 环境变量        BB_SYNC_ROOT=D:/courses
+3. 配置文件        ~/.bb-sync/config.yaml
+4. 内置默认值      root: ~/courses
+```
+
+环境变量名 = `BB_SYNC_` + 配置项名的大写形式，支持全部配置项：
+
+```powershell
+$env:BB_SYNC_ROOT = "D:/courses"
+$env:BB_SYNC_MAX_DEPTH = "2"
+bb-sync run
+```
+
 ## 用命令行改配置（bb-sync config）
 
 不想手动编辑 YAML 时，可以用 `config` 子命令直接读写配置文件（编辑会保留原有注释）：
 
 ```powershell
 bb-sync config path                # 显示实际生效的配置文件路径
+bb-sync config init                # 生成一份默认配置（已存在则不覆盖）
 bb-sync config show                # 显示整份配置
 bb-sync config get root            # 读取某一项
 bb-sync config set root D:/courses # 修改默认下载目录（永久生效）
@@ -28,6 +48,8 @@ bb-sync config edit                # 用系统编辑器打开配置文件
 
 `config` 操作的是「实际生效」的那份配置：当前目录有 `config.yaml` 就改它，
 否则改 `~/.bb-sync/config.yaml`；用 `--config <路径>` 可以显式指定别的文件。
+
+加 `--json` 可让输出机器可读，例如 `bb-sync --json config get root`。
 
 ## 配置项一览
 
@@ -112,7 +134,7 @@ announcements: true
 max_depth: 3
 ```
 
-- 抓取内容区时，下钻子文件夹的最大层数
+- 抓取内容区时，下钻子文件夹的最大层数（1–10）
 - `1` = 只下载内容区第一层的文件；课程内容嵌套很深时调大即可
 
 ## 完整示例
@@ -139,6 +161,6 @@ max_depth: 2
 ## 常见问题
 
 - **改了配置不生效** → 确认改的是实际生效的那份：当前目录和 `~/.bb-sync/` 可能各有一份，
-  优先读当前目录的。
+  优先读当前目录的。`bb-sync config path` 可确认。
 - **`--root` 和 `root` 都写了用哪个** → 命令行 `--root` 优先。
 - **恢复默认配置** → 删掉 `~/.bb-sync/config.yaml`，下次运行会自动重新生成。

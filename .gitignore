@@ -1,5 +1,4 @@
-# 凭据与登录态（绝不入库）
-.env
+# 登录态浏览器 profile（绝不入库）
 .browser-profile/
 
 # 本地运行时
