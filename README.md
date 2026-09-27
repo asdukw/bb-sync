@@ -30,26 +30,32 @@ uv tool install git+https://github.com/asdukw/bb-sync
 
 ## 首次配置
 
-所有用户配置与运行时数据统一放在 `~/.bb-sync/`（可用环境变量 `BB_SYNC_HOME` 覆盖）：
+只需两步，所有用户配置与运行时数据统一放在 `~/.bb-sync/`（可用环境变量 `BB_SYNC_HOME` 覆盖）：
 
 ```powershell
-# 1. 准备配置目录
-mkdir ~/.bb-sync
-Copy-Item config.yaml ~/.bb-sync/     # 源码直跑且在项目目录内运行时可跳过（自动读当前目录）
-notepad ~/.bb-sync/config.yaml
-
-# 2. 凭据：交互式录入，保存到系统钥匙串（Windows 凭据管理器 / macOS 钥匙串）
+# 1. 凭据：交互式录入，保存到系统钥匙串（Windows 凭据管理器 / macOS 钥匙串）
 bb-sync --login
 
-# 3. 部署 Steel 后端（仅首次，之后无需重复）
+# 2. 直接开跑：首次运行会自动下载部署 Steel 浏览器后端（无需手动 clone）
+bb-sync
+```
+
+> **前置要求**：Node.js ≥ 18（`choco install nodejs`），首次运行需能访问 github.com 与
+> npm registry。`config.yaml` 可选——不放也有合理默认值；要自定义时
+> `Copy-Item config.yaml ~/.bb-sync/`（源码直跑且在项目目录内运行时，会自动读当前目录的）。
+
+<details>
+<summary>手动部署 Steel（自动部署失败时的替代方案）</summary>
+
+```powershell
 git clone --depth 1 https://github.com/steel-dev/steel-browser "$env:USERPROFILE\.bb-sync\.steel"
 cd "$env:USERPROFILE\.bb-sync\.steel\api"
 npm install
 cd -
-# 若 Steel 未装依赖会报错提示；Chrome 路径与静默开关在 .steel/api/.env 中
+# Chrome 路径与静默开关在 .steel/api/.env 中
 ```
 
-> `config.yaml` 与 `.env` 放**当前工作目录**优先于 `~/.bb-sync/`，方便多学校/多账号并存。
+</details>
 
 ### 凭据存储
 
@@ -112,7 +118,8 @@ CI 会在每次 push/PR 时运行以上三项门禁；打 `v*` tag 会自动构�
   环境变量且大小写不敏感，会顶掉 `.env` 的值。本脚本直接从 `.env` 文件解析，
   已规避该问题。
 - **登录卡住/需要 MFA** → 跑 `--headed`：Steel 会弹出可见窗口，脚本给你 120 秒手动完成。
-- **Steel 服务端起不来** → 看 `.steel/steel.log`；确认 `.steel/api/node_modules` 已安装。
+- **Steel 服务端起不来** → 看 `~/.bb-sync/.steel/steel.log`；删掉 `~/.bb-sync/.steel` 后
+  重新运行即可触发自动重装。
 - **改了静默开关不生效** → `CHROME_HEADLESS` 在服务端启动时读取，改完 `.steel/api/.env`
   需先结束已有 Steel 进程再运行脚本。
 - 调试工具：`uv run python debug_login.py` 会分步 dump 登录各阶段（URL/文本/截图）。

@@ -19,10 +19,13 @@ from urllib import error, request
 
 from paths import BB_SYNC_HOME
 
-STEEL_DIR = BB_SYNC_HOME / ".steel" / "api"
-STEEL_LOG = BB_SYNC_HOME / ".steel" / "steel.log"
+STEEL_ROOT = BB_SYNC_HOME / ".steel"
+STEEL_DIR = STEEL_ROOT / "api"
+STEEL_LOG = STEEL_ROOT / "steel.log"
 STEEL_URL = os.environ.get("STEEL_URL", "http://127.0.0.1:3000")
 PROFILE_DIR = BB_SYNC_HOME / ".browser-profile" / "steel-chrome"
+# GitHub 源码包（免 git 依赖，无需 clone）
+STEEL_ZIP_URL = "https://codeload.github.com/steel-dev/steel-browser/zip/refs/heads/main"
 
 IS_WIN = sys.platform.startswith("win")
 
@@ -36,6 +39,96 @@ def _node_bin() -> str:
         if Path(cand).exists():
             return cand
     raise RuntimeError("未找到 Node.js，请先安装 Node.js（或将其加入 PATH）")
+
+
+def is_deployed() -> bool:
+    """Steel 后端是否已就绪（源码 + 依赖都在）"""
+    return (STEEL_DIR / "src" / "index.ts").exists()
+
+
+def deploy() -> None:
+    """自动部署 Steel 后端：下载源码包 + 安装 npm 依赖（首次运行自动触发）。
+
+    - 源码走 codeload zip（不依赖 git）；走系统代理，适配本机 Clash 等环境
+    - 依赖安装在 .steel/api（npm workspaces 自动提升到 .steel/node_modules）
+    - husky 等 prepare 脚本失败可忽略，只要 tsx 可执行文件就位即可
+    """
+    import zipfile
+
+    _node_bin()  # 提前给出友好的 Node.js 缺失提示
+    npm = shutil.which("npm")
+    if not npm:
+        raise RuntimeError("未找到 npm，请安装 Node.js（自带 npm）后重试")
+
+    STEEL_ROOT.parent.mkdir(parents=True, exist_ok=True)
+    if STEEL_ROOT.exists():  # 清理残缺目录后重装
+        print(f"[steel] 清理残缺目录: {STEEL_ROOT}")
+        shutil.rmtree(STEEL_ROOT)
+
+    # 1) 下载源码 zip（流式写入 + 进度提示）
+    zip_path = BB_SYNC_HOME / "steel-browser.zip"
+    print("[steel] 下载 steel-browser 源码 ...")
+    req = request.Request(STEEL_ZIP_URL, headers={"User-Agent": "bb-sync"})
+    try:
+        with request.urlopen(req, timeout=60) as resp, open(zip_path, "wb") as f:
+            done = 0
+            while chunk := resp.read(256 * 1024):
+                f.write(chunk)
+                done += len(chunk)
+                if done // (5 * 1024 * 1024) != (done - len(chunk)) // (5 * 1024 * 1024):
+                    print(f"[steel]   已下载 {done / 1048576:.0f} MB ...")
+    except error.URLError as e:
+        raise RuntimeError(
+            f"下载 steel-browser 失败: {e}\n"
+            "请检查网络/代理是否可访问 github.com（Clash 用户请确认系统代理已开启）"
+        ) from e
+
+    # 2) 解压：zip 根目录为 steel-browser-main/，移到 .steel/
+    tmp_dir = BB_SYNC_HOME / ".steel-tmp"
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+    with zipfile.ZipFile(zip_path) as zf:
+        zf.extractall(tmp_dir)
+    shutil.move(str(tmp_dir / "steel-browser-main"), str(STEEL_ROOT))
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+    zip_path.unlink()
+    print(f"[steel] 源码已就位: {STEEL_ROOT}")
+
+    # 3) 安装依赖（husky 等 prepare 脚本失败可忽略，以 tsx 是否就位为准）
+    print("[steel] 安装 npm 依赖（首次需几分钟，请耐心等待）...")
+    STEEL_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with open(STEEL_LOG, "a", encoding="utf-8") as logf:
+        proc = subprocess.run(
+            [npm, "install", "--no-audit", "--no-fund"],
+            cwd=str(STEEL_DIR),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+        )
+        logf.write(proc.stdout or "")
+
+    if proc.returncode != 0:
+        print(f"[steel] npm install 退出码 {proc.returncode}（若是 husky/prepare 脚本报错可忽略）")
+
+    if not _find_tsx():
+        tail = "\n".join((proc.stdout or "").splitlines()[-30:])
+        raise RuntimeError(
+            f"Steel 依赖安装失败，请查看日志: {STEEL_LOG}\n--- npm 输出末尾 ---\n{tail}"
+        )
+    print("[steel] 部署完成 ✓")
+
+
+def _find_tsx() -> Path | None:
+    """tsx 可执行入口：npm workspaces 会把依赖提升到 .steel/node_modules"""
+    return next(
+        (
+            d / "node_modules" / "tsx" / "dist" / "cli.mjs"
+            for d in (STEEL_DIR, STEEL_DIR.parent)
+            if (d / "node_modules" / "tsx" / "dist" / "cli.mjs").exists()
+        ),
+        None,
+    )
 
 
 # 本机回环必须绕过系统代理（用户环境有 Clash Verge），否则探测会被代理拒绝
@@ -62,23 +155,12 @@ def healthy() -> bool:
 
 
 def start_server(headed: bool, wait: int = 120) -> None:
-    """后台启动 Steel 服务端（独立进程，不阻塞）"""
-    if not STEEL_DIR.exists():
-        raise RuntimeError(
-            f"Steel 源码缺失: {STEEL_DIR}\n请先执行: git clone --depth 1 "
-            f'https://github.com/steel-dev/steel-browser "{BB_SYNC_HOME / ".steel"}"'
-        )
-    # npm workspaces 会把依赖提升到 .steel/node_modules
-    tsx = next(
-        (
-            d / "node_modules" / "tsx" / "dist" / "cli.mjs"
-            for d in (STEEL_DIR, STEEL_DIR.parent)
-            if (d / "node_modules" / "tsx" / "dist" / "cli.mjs").exists()
-        ),
-        None,
-    )
+    """后台启动 Steel 服务端（独立进程，不阻塞；未部署时自动部署）"""
+    if not is_deployed():
+        deploy()
+    tsx = _find_tsx()
     if tsx is None:
-        raise RuntimeError("Steel 依赖未安装，请在 .steel 目录下执行 npm install")
+        raise RuntimeError(f"Steel 依赖未就绪，请查看日志或重新运行（会自动重装）: {STEEL_LOG}")
 
     env = dict(os.environ)
     env["CHROME_HEADLESS"] = "false" if headed else "true"
