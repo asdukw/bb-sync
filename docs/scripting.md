@@ -10,6 +10,8 @@ bb-sync 按 Unix CLI 惯例严格分流输出：**结果走 stdout，诊断走 s
 | stdout | 命令的「数据结果」 | `bb-sync course list \| jq '.[].code'` |
 | stderr | 日志 / 进度 / 警告 / 错误 | 人读，或用 `2>/dev/null` 丢弃 |
 
+> 自动更新检查的提示也走 stderr，不会污染 stdout；`--quiet` 下会跳过检查。
+
 ## `--json`：机器可读输出
 
 `--json` 是**全局选项**，位置在子命令之前：

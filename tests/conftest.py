@@ -73,6 +73,8 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Pa
     for key in list(os.environ):
         if key.startswith("BB_SYNC_"):
             monkeypatch.delenv(key, raising=False)
+    # 默认关闭自动更新检查：测试不能触网；需要验证提示的用例可显式删掉该变量。
+    monkeypatch.setenv("BB_SYNC_NO_UPDATE_CHECK", "1")
 
     # Steel 装在 BB_SYNC_HOME/.steel；显式对齐模块常量，避免测试碰真实安装目录。
     steel_root = home / ".steel"

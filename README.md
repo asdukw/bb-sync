@@ -102,7 +102,9 @@ bb-sync run --root "D:/University/courses"
 - **登录失败 / 需要 MFA**：先运行 `bb-sync auth status` 查看凭据，再用 `bb-sync run --headed` 重新登录。
 - **想更换密码**：重新运行 `bb-sync auth login`。
 - **配置不生效**：运行 `bb-sync config path`，确认实际生效的配置文件。
-- **想更新**：`uv tool upgrade bb-sync`。
+- **想更新**：`uv tool upgrade bb-sync`。正常命令成功后会每天检查一次 GitHub
+  Releases，发现新版本时在 stderr 提示升级；离线时静默跳过。`--quiet` 或设置
+  `BB_SYNC_NO_UPDATE_CHECK=1` 可关闭检查。
 - **想卸载**：先 `bb-sync auth logout`，再执行 `uv tool uninstall bb-sync`。
 
 建议只在个人电脑上使用。卸载软件不会自动删除已下载的课程文件；如果不再需要，请手动删除下载目录。

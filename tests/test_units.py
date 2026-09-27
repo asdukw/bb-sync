@@ -757,6 +757,116 @@ def test_load_credentials_handles_keyring_error(monkeypatch) -> None:
     assert load_credentials().ok is False
 
 
+# ---------------------------------------------------------------- 版本更新检查
+
+
+def test_update_version_comparison() -> None:
+    from bb_sync.core.update import is_outdated
+
+    assert is_outdated("1.0.2", "1.1.0") is True
+    assert is_outdated("v1.0.2", "1.0.2") is False
+    assert is_outdated("1.0", "1.0.0") is False
+    assert is_outdated("2.0.0", "1.9.9") is False
+    assert is_outdated("not-a-version", "1.0.0") is False
+
+
+def test_fetch_latest_release_parses_github_payload(monkeypatch) -> None:
+    import io
+    import json
+
+    from bb_sync.core import update
+
+    def fake_urlopen(req, timeout: float) -> io.BytesIO:
+        assert req.full_url == update.RELEASES_API
+        assert timeout == 1.5
+        return io.BytesIO(
+            json.dumps({"tag_name": "v2.0.0", "html_url": "https://example.test/v2.0.0"}).encode(
+                "utf-8"
+            )
+        )
+
+    monkeypatch.setattr(update.request, "urlopen", fake_urlopen)
+
+    assert update.fetch_latest_release(timeout=1.5) == update.ReleaseInfo(
+        version="2.0.0",
+        tag="v2.0.0",
+        url="https://example.test/v2.0.0",
+    )
+
+
+def test_update_check_uses_fresh_cache(monkeypatch) -> None:
+    from bb_sync.core import update
+
+    monkeypatch.delenv(update.DISABLE_ENV, raising=False)
+    calls: list[float] = []
+
+    def fake_fetch(timeout: float) -> update.ReleaseInfo:
+        calls.append(timeout)
+        return update.ReleaseInfo("1.1.0", "v1.1.0", "https://example.test/v1.1.0")
+
+    monkeypatch.setattr(update, "fetch_latest_release", fake_fetch)
+
+    first = update.check_for_update(current="1.0.0", now=1000.0)
+    second = update.check_for_update(current="1.0.0", now=1001.0)
+
+    assert first is not None and first.latest == "1.1.0"
+    assert second is not None and second.latest == "1.1.0"
+    assert len(calls) == 1, "缓存有效期内不应重复访问 GitHub"
+
+
+def test_update_check_caches_failure(monkeypatch) -> None:
+    from bb_sync.core import update
+
+    monkeypatch.delenv(update.DISABLE_ENV, raising=False)
+    calls: list[float] = []
+
+    def fake_fetch(timeout: float) -> None:
+        calls.append(timeout)
+        return None
+
+    monkeypatch.setattr(update, "fetch_latest_release", fake_fetch)
+
+    assert update.check_for_update(current="1.0.0", now=2000.0) is None
+    assert update.check_for_update(current="1.0.0", now=2001.0) is None
+    assert len(calls) == 1, "检查失败也应缓存，避免离线时反复等待超时"
+
+
+def test_update_check_can_use_stale_cache_when_offline(monkeypatch) -> None:
+    from bb_sync.core import update
+
+    monkeypatch.delenv(update.DISABLE_ENV, raising=False)
+    calls: list[float] = []
+
+    def fake_fetch(timeout: float) -> update.ReleaseInfo | None:
+        calls.append(timeout)
+        if len(calls) == 1:
+            return update.ReleaseInfo("1.1.0", "v1.1.0", "https://example.test/v1.1.0")
+        return None
+
+    monkeypatch.setattr(update, "fetch_latest_release", fake_fetch)
+
+    assert update.check_for_update(current="1.0.0", now=3000.0) is not None
+    stale = update.check_for_update(
+        current="1.0.0",
+        now=3000.0 + update.CACHE_TTL_SECONDS + 1,
+    )
+    assert stale is not None and stale.latest == "1.1.0"
+    assert len(calls) == 2
+
+
+def test_update_check_respects_disable_env(monkeypatch) -> None:
+    from bb_sync.core import update
+
+    monkeypatch.setenv(update.DISABLE_ENV, "1")
+    monkeypatch.setattr(
+        update,
+        "fetch_latest_release",
+        lambda timeout: pytest.fail("关闭更新检查后不应访问网络"),
+    )
+
+    assert update.check_for_update(current="1.0.0", now=4000.0) is None
+
+
 # ---------------------------------------------------------------- 异常与退出码
 
 

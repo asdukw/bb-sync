@@ -47,6 +47,21 @@ SUBCOMMANDS: dict[str, tuple[str, str]] = {
 FLAT_COMMANDS = frozenset({"run", "doctor"})
 
 
+def _notify_update_after_command(result: Any, **_: Any) -> Any:
+    """普通命令成功后检查更新；提示失败绝不改变命令结果。"""
+    ctx = click.get_current_context(silent=True)
+    app_ctx = ctx.obj if ctx is not None else None
+    if app_ctx is None or getattr(app_ctx, "quiet", False):
+        return result
+    try:
+        from bb_sync.core.update import notify_if_outdated
+
+        notify_if_outdated(app_ctx.console)
+    except Exception:  # 更新检查是附加功能，不能影响正常命令
+        pass
+    return result
+
+
 def _as_click_group(obj: object) -> Any:
     """把命令模块导出的 Typer 实例转成 Click 命令组。
 
@@ -181,6 +196,7 @@ def _build_cli() -> LazyGroup:
     @click.group(
         cls=LazyGroup,
         name="bb-sync",
+        result_callback=_notify_update_after_command,
         help="Blackboard 课程资源自动同步（ADFS SSO + Steel 浏览器后端）。",
         invoke_without_command=True,
         # 不用 no_args_is_help：那会让「无参数」以退出码 2 结束。

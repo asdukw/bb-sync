@@ -30,6 +30,9 @@ $env:BB_SYNC_MAX_DEPTH = "2"
 bb-sync run
 ```
 
+自动更新检查不读取 config.yaml；如需在脚本 / CI 中关闭，可设置
+`BB_SYNC_NO_UPDATE_CHECK=1`。
+
 ## 用命令行改配置（bb-sync config）
 
 不想手动编辑 YAML 时，可以用 `config` 子命令直接读写配置文件（编辑会保留原有注释）：
