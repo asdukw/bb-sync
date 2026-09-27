@@ -41,6 +41,36 @@ def _node_bin() -> str:
     raise RuntimeError("未找到 Node.js，请先安装 Node.js（或将其加入 PATH）")
 
 
+def _detect_browser() -> str | None:
+    """探测本机 Chromium 内核浏览器：Chrome 优先，Edge 兜底。
+
+    Steel 自带的探测只认 Chrome 标准路径，裸机（仅预装 Edge）会直接失败；
+    这里提前探测，结果通过 CHROME_EXECUTABLE_PATH 传给 Steel 进程。
+    """
+    if IS_WIN:
+        pf = os.environ.get("PROGRAMFILES", r"C:\Program Files")
+        pf86 = os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")
+        candidates = [
+            rf"{pf}\Google\Chrome\Application\chrome.exe",
+            rf"{pf86}\Google\Chrome\Application\chrome.exe",
+            rf"{pf86}\Microsoft\Edge\Application\msedge.exe",
+            rf"{pf}\Microsoft\Edge\Application\msedge.exe",
+        ]
+    elif sys.platform == "darwin":
+        candidates = [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        ]
+    else:
+        candidates = [
+            "/usr/bin/google-chrome",
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            "/usr/bin/microsoft-edge",
+        ]
+    return next((c for c in candidates if Path(c).exists()), None)
+
+
 def is_deployed() -> bool:
     """Steel 后端是否已就绪（源码 + 依赖都在）"""
     return (STEEL_DIR / "src" / "index.ts").exists()
@@ -166,6 +196,14 @@ def start_server(headed: bool, wait: int = 120) -> None:
     env["CHROME_HEADLESS"] = "false" if headed else "true"
     env["HOST"] = "127.0.0.1"
     env["PORT"] = STEEL_URL.rsplit(":", 1)[-1]
+    if not env.get("CHROME_EXECUTABLE_PATH"):
+        browser = _detect_browser()
+        if browser:
+            env["CHROME_EXECUTABLE_PATH"] = browser
+            if "edge" in Path(browser).name.lower():
+                print(f"[steel] 未检测到 Chrome，回退使用 Edge: {browser}")
+        else:
+            print("[steel] 警告: 未检测到 Chrome/Edge，Steel 可能无法启动浏览器")
 
     STEEL_LOG.parent.mkdir(parents=True, exist_ok=True)
     # 日志句柄需随后台进程长期存活，不适用 context manager

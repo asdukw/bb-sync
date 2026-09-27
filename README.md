@@ -15,7 +15,7 @@
 
 - [Git](https://git-scm.com/downloads) — 安装命令会以 `git+https://` 形式从 GitHub 拉取本项目，因此系统里必须有 git；Windows 可用 `winget install --id Git.Git -e` 或直接运行官网安装包
 - [Node.js](https://nodejs.org/) **22+**（自带 npm）— 浏览器后端是 Node 服务，首次运行会自动用 npm 安装依赖；`winget install OpenJS.NodeJS.LTS` 或官网安装包
-- [Google Chrome](https://www.google.com/chrome/) — 登录 Blackboard 用的浏览器内核；需安装在默认位置（Program Files），自定义位置请设置环境变量 `CHROME_EXECUTABLE_PATH` 指向 chrome.exe
+- 浏览器内核 — **Google Chrome 或 Microsoft Edge 均可**（自动检测，Windows 自带的 Edge 就能用）；装在非默认位置时设置环境变量 `CHROME_EXECUTABLE_PATH` 指向 chrome.exe / msedge.exe
 
 装完后**重开一个终端**（让 PATH 生效）
 
