@@ -110,6 +110,8 @@ bb-sync
 - **`--version` / `--help` 启动稍慢？** → 这是 Python 解释器冷启动的固有开销（本机约 0.85s）；
   命令本身只加载 typer/click，playwright、rich、pydantic、keyring **都不会**在 `--help` 时导入。
 
+**当前版本 1.0.0**，各版本变更见 [CHANGELOG.md](CHANGELOG.md)。
+
 ## 开发
 
 ```powershell
