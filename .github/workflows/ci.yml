@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  quality:
+  quality-matrix:
     name: quality (${{ matrix.os }})
     strategy:
       fail-fast: false
@@ -92,3 +92,12 @@ jobs:
           test "$rc" -eq 2
           # --json 的 JSON 必须落在 stdout 且可被解析（诊断走 stderr 不污染）
           bb-sync --json doctor 2>/dev/null | python -c "import json,sys; json.load(sys.stdin)"
+
+  # 分支保护要求状态检查名为 `quality`；矩阵任务改名后由这个聚合门禁继续提供。
+  quality:
+    name: quality
+    needs: quality-matrix
+    runs-on: ubuntu-latest
+    steps:
+      - name: All platform checks passed
+        run: echo "Ubuntu and macOS quality checks passed"
