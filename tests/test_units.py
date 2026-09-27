@@ -308,6 +308,29 @@ def test_config_target_prefers_cwd(tmp_path: Path, monkeypatch) -> None:
     assert config_target() == cfg
 
 
+# ---------------------------------------------------------------- 下载根目录
+
+
+def test_ensure_root_directory_creates_nested_path(tmp_path: Path) -> None:
+    from bb_sync.core.service import ensure_root_directory
+
+    target = tmp_path / "nested" / "courses"
+    assert ensure_root_directory(target) is True
+    assert target.is_dir()
+    assert ensure_root_directory(target) is False
+
+
+def test_ensure_root_directory_reports_unavailable_drive(tmp_path: Path, monkeypatch) -> None:
+    from bb_sync.core import service
+
+    target = tmp_path / "courses"
+    monkeypatch.setattr(service, "_drive_available", lambda root: False)
+
+    with pytest.raises(ConfigError, match="磁盘不可用"):
+        service.ensure_root_directory(target)
+    assert not target.exists()
+
+
 # ---------------------------------------------------------------- 抓取辅助函数
 
 

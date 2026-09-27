@@ -20,7 +20,7 @@ from bb_sync.blackboard.login import ensure_login
 from bb_sync.blackboard.models import Course, FileItem, SyncStats
 from bb_sync.browser import steel
 from bb_sync.core.config import Settings
-from bb_sync.core.errors import NotFoundError
+from bb_sync.core.errors import ConfigError, NotFoundError
 from bb_sync.core.output import Console
 
 
@@ -46,6 +46,35 @@ def plan_root(settings: Settings, config_path: Path, cli_root: str | None) -> Pa
         raw = Path(cli_root).expanduser()
         return raw if raw.is_absolute() else (Path.cwd() / raw).resolve()
     return settings.resolve_root(config_path)
+
+
+def _drive_available(root: Path) -> bool:
+    """检查带盘符/网络共享的绝对路径，其根位置当前是否存在。"""
+    if not root.drive:
+        return True
+    try:
+        return Path(root.anchor).exists()
+    except OSError:
+        return False
+
+
+def ensure_root_directory(root: Path) -> bool:
+    """确保下载根目录可用，返回调用前该目录是否尚不存在。"""
+    first_run = not root.exists()
+    if not _drive_available(root):
+        raise ConfigError(
+            f"下载根目录所在磁盘不可用：{root.drive}（当前配置：{root}）",
+            "请确认该磁盘已连接/挂载，或用 --root <可用目录> 临时指定；"
+            "也可运行 bb-sync config set root <可用目录> 永久修改",
+        )
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ConfigError(
+            f"无法创建下载根目录：{root}",
+            f"{exc}；请检查路径权限，或运行 bb-sync config set root <可用目录> 修改配置",
+        ) from exc
+    return first_run
 
 
 def folder_name(course: Course, explicit_dirs: dict[str, str]) -> str:
@@ -136,8 +165,7 @@ def run_sync(options: SyncOptions) -> SyncStats:
     console = options.console
     settings = options.settings
 
-    first_run = not options.root.exists()
-    options.root.mkdir(parents=True, exist_ok=True)
+    first_run = ensure_root_directory(options.root)
     if first_run:
         console.log(f"[info] 首次运行：课程文件将下载到 {options.root}")
         console.log("       （永久修改：bb-sync config set root <目录>；临时指定：--root）")
@@ -215,6 +243,7 @@ def list_courses(options: SyncOptions) -> list[Course]:
 
 __all__ = [
     "SyncOptions",
+    "ensure_root_directory",
     "folder_name",
     "list_courses",
     "plan_root",
