@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bb-sync"
+version = "0.1.0"
+description = "Blackboard 课程资源自动同步：登录 ADFS SSO，增量下载课件/作业/指导与公告"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+keywords = ["blackboard", "scraper", "course", "sync", "adfs"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "playwright>=1.45",
+    "python-dotenv>=1.0",
+    "PyYAML>=6.0",
+]
+
+[dependency-groups]
+dev = ["ruff>=0.6", "pyright>=1.1.380"]
+
+[project.scripts]
+bb-sync = "sync:main"
+
+[tool.setuptools]
+py-modules = ["sync", "steel_backend"]
+
+# ------------------------------------------------------------ 质量门禁
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["courses", ".steel", ".venv", ".workbuddy", ".browser-profile"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+# E501 行长交给 formatter；SIM108 三元替换可读性见仁见智
+ignore = ["E501", "SIM108"]
+
+[tool.pyright]
+include = ["sync.py", "steel_backend.py", "debug_login.py", "debug_courses.py", "debug_course.py"]
+exclude = ["courses", ".steel", ".venv", ".workbuddy", ".browser-profile"]
+typeCheckingMode = "basic"
+pythonVersion = "3.11"

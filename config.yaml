@@ -1,0 +1,29 @@
+# ================= bb-sync 配置 =================
+
+# 课程资源根目录：默认放在用户主目录下的 courses/（如 C:\Users\<你>\courses）
+# 也可以改成任意绝对路径，或相对本文件的路径（如 .）
+root: ~/courses
+
+# 同步哪些课程：all = 全部（Blackboard 上当前共 8 门）
+# 只想同步部分课程时改成列表，例如：[CSC5010, DDA5002, MDS5122]
+include: all
+
+# 课程代码 -> 本地文件夹 的显式映射（对齐你已有的目录命名习惯）
+# 未列出的课程会自动生成 "代码_关键词" 文件夹名
+course_dirs:
+  CSC5010: CSC5010_AI
+  DDA5002: DDA5002_Optimization
+  MDS5122: MDS5122_Deep_Learning
+
+# 内容归类关键词：按内容区/条目标题匹配，命中即归入对应子文件夹
+# 顺序：先匹配 assignments，再 tutorials，其余归 lectures
+keywords:
+  assignments: ["assignment", "homework", "作业", "hw"]
+  tutorials: ["tutorial", "lab", "实验", "指导", "recitation"]
+  lectures: ["lecture", "课件", "讲义", "slides", "notes", "note"]
+
+# 公告是否同步（写入课程目录 announcements.md）
+announcements: true
+
+# 递归下钻内容子文件夹的最大深度（1 = 只下内容区第一层）
+max_depth: 3

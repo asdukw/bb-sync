@@ -1,0 +1,590 @@
+"""
+bb-sync — CUHK(SZ) Blackboard 课程资源自动同步
+================================================
+登录 bb.cuhk.edu.cn（ADFS SSO），抓取课程列表，自动下载课件/作业/指导
+到本地课程文件夹（lectures / assignments / tutorials）。
+
+用法：
+    python sync.py              # 增量同步（无头模式，复用已保存的登录态）
+    python sync.py --headed     # 有头模式（首次登录 / 需要人工过 MFA 时用）
+    python sync.py --dry-run    # 只列出将要下载的文件，不实际下载
+    python sync.py --course CSC5010   # 只同步指定课程
+"""
+
+from __future__ import annotations
+
+import argparse
+import html
+import mimetypes
+import re
+import sys
+import unicodedata
+from dataclasses import dataclass
+from pathlib import Path
+from urllib.parse import unquote
+
+import yaml
+from dotenv import dotenv_values
+from playwright.sync_api import Page, sync_playwright
+from playwright.sync_api import TimeoutError as PWTimeout
+
+from steel_backend import connect, create_session, ensure_server, release_session
+
+BASE = "https://bb.cuhk.edu.cn"
+# ADFS 页面元素选择器
+ADFS_USER = "input[name='userNameInput'], #userNameInput"
+ADFS_PASS = "input[name='PasswordInput'], #passwordInput"
+ADFS_NEXT = "#nextButton, #submitButton"  # 第一页「下一步」
+ADFS_SUBMIT = "#submitButton, #nextButton, span.submit"  # 密码页「登录」
+HERE = Path(__file__).resolve().parent
+PROFILE_DIR = HERE / ".browser-profile"
+LOGIN_URL = f"{BASE}/webapps/login/"
+
+# ---------------------------------------------------------------- data types
+
+
+@dataclass
+class Course:
+    bb_id: str  # e.g. _12345_1
+    title: str  # 原始标题
+    code: str = ""  # 提取的课程代码，如 CSC5010
+    slug: str = ""  # 本地文件夹名
+
+    def __post_init__(self) -> None:
+        m = re.search(r"\b([A-Z]{3,4}\d{4}[A-Z]?)\b", self.title.upper())
+        if m:
+            self.code = m.group(1)
+
+
+@dataclass
+class FileItem:
+    name: str | None
+    url: str
+    category: str  # lectures / assignments / tutorials / other
+    folder_hint: str = ""  # 内容区路径提示
+
+
+# ---------------------------------------------------------------- helpers
+
+
+def load_config() -> dict:
+    with open(HERE / "config.yaml", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def load_credentials() -> tuple[str, str]:
+    """直接从 .env 文件按原样读取凭据（STUDENT_ID / PASSWORD）。
+
+    不走 os.environ：Windows 环境变量名大小写不敏感，系统自带的 USERNAME=xxx
+    会顶掉 .env 里的 username；旧键名 username/password 仍兼容。
+    """
+    vals = dotenv_values(HERE / ".env")
+
+    def get(*keys: str) -> str:
+        for k in keys:
+            val = vals.get(k)
+            if val:
+                return val
+        return ""
+
+    return get("STUDENT_ID", "student_id", "username").strip(), get("PASSWORD", "password").strip()
+
+
+def match_category(text: str, keywords: dict) -> str | None:
+    """命中关键词返回分类，未命中返回 None（由调用方决定默认值）"""
+    t = (text or "").lower()
+    for cat in ("assignments", "tutorials"):  # 优先级高的先匹配
+        for kw in keywords.get(cat, []):
+            if kw.lower() in t:
+                return cat
+    for kw in keywords.get("lectures", []):
+        if kw.lower() in t:
+            return "lectures"
+    return None
+
+
+def categorize(text: str, keywords: dict) -> str:
+    return match_category(text, keywords) or "lectures"
+
+
+def make_slug(course: Course) -> str:
+    """课程代码 + 标题里的英文关键词，如 CSC5010_AI"""
+    if not course.code:
+        safe = re.sub(r"[^\w\u4e00-\u9fff]+", "_", course.title).strip("_")
+        return safe[:40]
+    rest = course.title.upper().replace(course.code.upper(), "", 1)
+    words = re.findall(r"[A-Za-z]{3,}", rest)
+    stop = {"THE", "AND", "FOR", "SEMESTER", "FALL", "SPRING", "SUMMER", "SECTION"}
+    key = next((w.capitalize() for w in words if w.upper() not in stop and len(w) >= 4), "")
+    return f"{course.code}_{key}" if key else course.code
+
+
+def sanitize_filename(name: str) -> str:
+    name = unicodedata.normalize("NFKC", name).strip()
+    name = re.sub(r'[\\/:*?"<>|]+', "_", name)
+    return name[:150] or "untitled"
+
+
+def log(msg: str) -> None:
+    print(msg, flush=True)
+
+
+# ---------------------------------------------------------------- browser
+
+
+def is_logged_in(page: Page) -> bool:
+    try:
+        page.goto(
+            f"{BASE}/webapps/portal/execute/tabs/tabAction?tab_tab_group_id=_1_1",
+            wait_until="domcontentloaded",
+            timeout=30000,
+        )
+        page.wait_for_timeout(2000)
+        url = page.url
+        if "login" in url.lower() or "adfs" in url.lower() or "sts." in url.lower():
+            return False
+        content = page.content()
+        return (
+            "user_id" not in content
+            or "My Institutions" in content
+            or "课程" in content
+            or "Courses" in content
+        )
+    except PWTimeout:
+        return False
+
+
+def do_login(page: Page, username: str, password: str, headed: bool) -> None:
+    log("[login] 打开登录页 ...")
+    page.goto(LOGIN_URL, wait_until="domcontentloaded")
+    # 主按钮跳转 ADFS OAuth2
+    page.wait_for_selector("input[name='login'], #login input.submit", timeout=10000)
+    with page.expect_navigation(wait_until="domcontentloaded", timeout=30000):
+        page.click("input[name='login']")
+
+    # ADFS 登录页（分页式：先账号 → 提交 → 再密码；少数配置同页显示）
+    page.wait_for_selector(ADFS_USER, timeout=20000)
+    log("[login] 填写用户名 ...")
+    page.fill(ADFS_USER, username)
+
+    if not page.locator(ADFS_PASS).first.is_visible():
+        # 第一页只有账号：点「下一步」翻到密码页
+        try:
+            page.click(ADFS_NEXT, timeout=8000)
+        except PWTimeout:
+            page.press(ADFS_USER, "Enter")
+        page.wait_for_selector(ADFS_PASS, state="visible", timeout=20000)
+
+    log("[login] 填写密码 ...")
+    page.fill(ADFS_PASS, password)
+    try:
+        with page.expect_navigation(wait_until="domcontentloaded", timeout=30000):
+            page.click(ADFS_SUBMIT, timeout=8000)
+    except PWTimeout:
+        page.press(ADFS_PASS, "Enter")
+        page.wait_for_load_state("domcontentloaded", timeout=20000)
+
+    # 等待回到 Blackboard
+    for _ in range(30):
+        page.wait_for_timeout(1000)
+        if "bb.cuhk.edu.cn" in page.url and "adfs" not in page.url and "sts." not in page.url:
+            break
+    if not is_logged_in(page):
+        page.screenshot(path=str(HERE / "debug_login.png"), full_page=True)
+        (HERE / "debug_login.html").write_text(page.content(), encoding="utf-8")
+        log(f"[debug] 当前 URL: {page.url}")
+        log("[debug] 已保存截图 debug_login.png 与页面源码 debug_login.html")
+        raise RuntimeError(
+            "登录失败：请检查 .env 中的凭据，或是否有 MFA/验证码。\n"
+            f"(当前 URL: {page.url})\n"
+            "如有 MFA，请运行 python sync.py --headed 手动在浏览器里完成一次登录，"
+            "登录态会保存在 .browser-profile/，之后无需再手动。"
+        )
+    log("[login] 登录成功 ✓")
+
+
+def ensure_login(page: Page, headed: bool) -> None:
+    if is_logged_in(page):
+        log("[login] 已有有效登录态（复用 Steel profile）")
+        return
+    username, password = load_credentials()
+    if not username or not password:
+        raise RuntimeError("请在 .env 中填写 username / password")
+    try:
+        do_login(page, username, password, headed)
+        return
+    except RuntimeError:
+        if not headed:
+            raise  # 静默模式失败就直接报错，提示改用 --headed
+        # 有头模式：可能需要人工过 MFA，留时间给用户在窗口里操作
+        log("[login] 等待人工完成 MFA / 验证码（最多 120 秒）...")
+        for _ in range(60):
+            page.wait_for_timeout(2000)
+            if is_logged_in(page):
+                log("[login] 检测到登录成功 ✓")
+                return
+        raise
+
+
+# ---------------------------------------------------------------- scraping
+
+
+def _course_links(page: Page) -> list[tuple[str, str]]:
+    """从「My Courses」取课程链接：优先 My Courses 标签页，再退回首标签页"""
+    for url in (
+        f"{BASE}/webapps/portal/execute/tabs/tabAction?tab_tab_group_id=_25_1",  # My Courses
+        f"{BASE}/webapps/portal/execute/tabs/tabAction?tab_tab_group_id=_1_1",  # 首页
+    ):
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(3500)
+            pairs = page.eval_on_selector_all(
+                "a[href*='launcher?type=Course']",
+                "els => els.map(e => [e.href, (e.innerText || '').trim()])",
+            )
+            if pairs:
+                log(f"[scan] 课程来源: {url}")
+                return pairs
+        except PWTimeout:
+            continue
+    return []
+
+
+def scrape_courses(page: Page, include) -> list[Course]:
+    log("[scan] 获取课程列表 ...")
+    pairs = _course_links(page)
+
+    courses: list[Course] = []
+    seen: set[str] = set()
+    for href, title in pairs:
+        m = re.search(r"id=(_\d+_1)", href)
+        if not m:
+            continue
+        bb_id = m.group(1)
+        if bb_id in seen:
+            continue
+        seen.add(bb_id)
+        courses.append(Course(bb_id=bb_id, title=title or bb_id))
+
+    if include and include != "all":
+        wanted = {c.upper() for c in (include if isinstance(include, list) else [include])}
+        courses = [c for c in courses if c.code and c.code.upper() in wanted]
+
+    log(f"[scan] 发现 {len(courses)} 门课程: " + ", ".join(c.code or c.title for c in courses))
+    return courses
+
+
+def collect_menu_links(page: Page, course: Course) -> list[tuple[str, str]]:
+    """获取课程左侧菜单中的内容区链接，返回 [(url, 菜单名), ...]
+
+    课程首页 = launcher → 会跳转到 modulepage/view，左菜单里 listContent.jsp
+    才是真实内容区（launchLink.jsp 是讨论区/工具等，不抓）。
+    """
+    page.goto(
+        f"{BASE}/webapps/blackboard/execute/launcher?type=Course&id={course.bb_id}",
+        wait_until="domcontentloaded",
+        timeout=30000,
+    )
+    page.wait_for_timeout(2500)
+    pairs = page.eval_on_selector_all(
+        "a[href*='listContent.jsp']", "els => els.map(e => [e.href, (e.innerText || '').trim()])"
+    )
+    seen, out = set(), []
+    for href, name in pairs:
+        m = re.search(r"content_id=(_\d+_1)", href)
+        if not m:
+            continue
+        cid = m.group(1)
+        if cid in seen:
+            continue
+        seen.add(cid)
+        out.append((href, name or cid))
+    return out
+
+
+def find_files(
+    page: Page,
+    url: str,
+    area_name: str,
+    depth: int,
+    max_depth: int,
+    keywords: dict,
+    visited: set[str],
+) -> list[FileItem]:
+    """递归抓取内容页中的附件（bbcswebdav）与子文件夹"""
+    if depth > max_depth or url in visited:
+        return []
+    visited.add(url)
+    try:
+        resp = page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        page.wait_for_timeout(1000)
+        if resp and resp.status >= 400:
+            return []
+    except PWTimeout:
+        return []
+
+    items: list[FileItem] = []
+    # 附件：优先级「文件名关键词 > 内容区名关键词」
+    files = page.eval_on_selector_all(
+        "a[href*='bbcswebdav']", "els => els.map(e => [e.href, (e.innerText || '').trim()])"
+    )
+    for href, name in files:
+        cat = match_category(name, keywords) or match_category(area_name, keywords) or "lectures"
+        items.append(
+            FileItem(
+                name=sanitize_filename(name) if name else None,
+                url=href,
+                category=cat,
+                folder_hint=area_name,
+            )
+        )
+
+    # 子文件夹：内容区里的 listContent.jsp 条目
+    if depth < max_depth:
+        subs = page.eval_on_selector_all(
+            "a[href*='listContent.jsp']",
+            "els => els.map(e => [e.href, (e.innerText || '').trim()])",
+        )
+        seen_sub = set()
+        for href, sub_name in subs:
+            m = re.search(r"content_id=(_\d+_1)", href)
+            if not m or m.group(1) in seen_sub:
+                continue
+            seen_sub.add(m.group(1))
+            items += find_files(
+                page, href, sub_name or area_name, depth + 1, max_depth, keywords, visited
+            )
+    return items
+
+
+def extract_area_name(content: str) -> str:
+    # 面包屑：id="breadcrumb" / class="breadcrumbs" 里的最后一级
+    m = re.search(r'id="breadcrumb".*?<li[^>]*>\s*<span[^>]*>(.*?)</span>', content, re.S | re.I)
+    if m:
+        return html.unescape(re.sub(r"<[^>]+>", "", m.group(1))).strip()
+    m = re.search(r"<h1[^>]*>(.*?)</h1>", content, re.S | re.I)
+    if m:
+        return html.unescape(re.sub(r"<[^>]+>", "", m.group(1))).strip()
+    return ""
+
+
+HW_NUM = re.compile(r"(?:hw|home\s*work|set|assignment)\D{0,3}(\d{1,2})", re.I)
+
+
+def sniff_ext(body: bytes) -> str | None:
+    """按文件头嗅探真实类型（服务器常返回 application/octet-stream）"""
+    if body.startswith(b"%PDF"):
+        return ".pdf"
+    if body.startswith(b"PK\x03\x04"):
+        return ".zip"
+    if body.startswith(b"\xd0\xcf\x11\xe0"):
+        return ".doc"
+    head = body[:400].lstrip()
+    if head.startswith(b"{"):
+        if b'"cells"' in body[:4000]:
+            return ".ipynb"
+        return ".json"
+    if head.startswith(b"<?xml") or head.lower().startswith(b"<html"):
+        return ".xml"
+    if body.startswith(b"\x1f\x8b"):
+        return ".gz"
+    return None
+
+
+def download_item(
+    ctx_request,
+    item: FileItem,
+    course_dir: Path,
+    dry_run: bool,
+    index: dict[str, Path] | None = None,
+) -> tuple[str, str]:
+    cat_dir = course_dir / item.category
+    # 作业按 hwN 归档，对齐已有目录习惯（assignments/hw1/…）
+    if item.category == "assignments" and item.name:
+        m = HW_NUM.search(item.name)
+        if m:
+            cat_dir = cat_dir / f"hw{int(m.group(1))}"
+    cat_dir.mkdir(parents=True, exist_ok=True)
+
+    # 文件名优先级：链接文本 > Content-Disposition > URL 末段
+    name = (item.name or "").strip()
+    resp = ctx_request.get(item.url, timeout=60000)
+    cd = resp.headers.get("content-disposition", "")
+    m = re.search(r"filename\*?=(?:UTF-8'')?\"?([^\";]+)", cd, re.I)
+    if not name or name.lower() in {"download", "untitled", "link"}:
+        if m:
+            name = unquote(m.group(1))
+        else:
+            name = sanitize_filename(unquote(item.url.split("?")[0].rsplit("/", 1)[-1]) or "file")
+    # 无扩展名/无法判断的（很多条目标题就是 "Lec 01"），按 Content-Type、再按文件头补后缀
+    body = resp.body()
+    if not Path(name).suffix or Path(name).suffix.lower() in {".bin", ".exe", ".dat"}:
+        ctype = resp.headers.get("content-type", "").split(";")[0].strip()
+        guess = mimetypes.guess_extension(ctype) if ctype else None
+        if guess in {None, ".bin", ".exe"}:
+            guess = sniff_ext(body)
+        if not guess:
+            tail = unquote(item.url.split("?")[0].rsplit("/", 1)[-1])
+            if "." in tail[-6:]:
+                guess = "." + tail.rsplit(".", 1)[-1].lower()
+        if guess:
+            name = (name.rsplit(".", 1)[0] if Path(name).suffix else name) + guess
+
+    # 与已有文件重名（不管在课程目录下哪一层）就跳过，避免重复下载
+    already = (index or {}).get(name.lower())
+    if not already and index and len(body) > 50_000:
+        # 名称不同但实际是同一个文件（BB 标题 vs 你手工改过的名字）
+        already = index.get(f"__size__{len(body)}{Path(name).suffix.lower()}")
+    if already:
+        try:
+            rel = str(already.relative_to(course_dir)).replace("\\", "/")
+        except ValueError:
+            rel = already.name
+        return ("exists", rel)
+
+    target = cat_dir / sanitize_filename(name)
+
+    if dry_run:
+        return ("would-download", target.name)
+    if target.exists():
+        return ("exists", target.name)
+    if len(body) == 0:
+        return ("empty", target.name)
+    target.write_bytes(body)
+    return ("downloaded", target.name)
+
+
+def scrape_announcements(page: Page, course: Course, course_dir: Path, dry_run: bool) -> None:
+    try:
+        page.goto(
+            f"{BASE}/webapps/blackboard/execute/announcement?method=search"
+            f"&context=mybb&viewChoice=2&course_id={course.bb_id}",
+            wait_until="domcontentloaded",
+            timeout=20000,
+        )
+        page.wait_for_timeout(1000)
+        content = page.content()
+        # 经典版公告结构：ul.announcementList > li（标题 h3 + 正文）
+        blocks = re.findall(
+            r"<li[^>]*class=\"[^\"]*announcement[^\"]*\"[^>]*>(.*?)</li>", content, re.S | re.I
+        )
+        if not blocks:
+            blocks = re.findall(
+                r"<div[^>]*class=\"[^\"]*announcement[^\"]*\"[^>]*>(.*?)</div>",
+                content,
+                re.S | re.I,
+            )
+        lines = [f"# {course.title} — 公告\n"]
+        for b in blocks:
+            b = html.unescape(b)
+            t = re.search(r"<h3[^>]*>(.*?)</h3>", b, re.S | re.I)
+            body = re.sub(r"<h3[^>]*>.*?</h3>", "", b, flags=re.S | re.I)
+            title = html.unescape(re.sub(r"<[^>]+>", " ", t.group(1))).strip() if t else "(无标题)"
+            text = html.unescape(re.sub(r"<[^>]+>", " ", body))
+            text = re.sub(r"\s+", " ", text).strip()
+            lines.append(f"## {title}\n\n{text}\n")
+        if len(lines) > 1 and not dry_run:
+            (course_dir / "announcements.md").write_text("\n".join(lines), encoding="utf-8")
+            log(f"    公告 x{len(lines) - 1} → announcements.md")
+    except Exception as e:  # 公告失败不阻塞主流程
+        log(f"    [warn] 公告抓取失败: {e}")
+
+
+# ---------------------------------------------------------------- main
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Blackboard 课程资源同步")
+    ap.add_argument("--headed", action="store_true", help="有头模式（首次登录/MFA 用）")
+    ap.add_argument("--dry-run", action="store_true", help="只列出文件，不下载")
+    ap.add_argument("--course", action="append", help="只同步指定课程代码（可多次）")
+    args = ap.parse_args()
+
+    cfg = load_config()
+    keywords = cfg.get("keywords", {})
+    max_depth = int(cfg.get("max_depth", 3))
+
+    root = Path(cfg.get("root", "~/courses")).expanduser()
+    if not root.is_absolute():
+        root = (HERE / root).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+
+    include = args.course if args.course else cfg.get("include", "all")
+    if include != "all" and isinstance(include, list):
+        pass
+    explicit_dirs = cfg.get("course_dirs") or {}
+
+    stats = {"downloaded": 0, "exists": 0, "would-download": 0, "empty": 0}
+    # ---- Steel 后端：独立进程、静默无窗口、登录态持久化在 profile ----
+    ensure_server(args.headed)
+    session = create_session(args.headed)
+
+    with sync_playwright() as p:
+        browser, ctx, page = connect(p, session)
+        log(f"[steel] CDP 已接入 (UA: {ctx.browser.version if ctx.browser else '?'}）")
+
+        ensure_login(page, args.headed)
+        log("[login] 登录态已保存（Steel profile）")
+
+        courses = scrape_courses(page, include)
+        if not courses:
+            log("[scan] 未发现课程，退出。")
+            return 1
+
+        for course in courses:
+            folder_name = explicit_dirs.get(course.code) or make_slug(course)
+            course_dir = root / folder_name
+            log(f"\n=== {course.code or '?'} | {course.title} → {folder_name}/ ===")
+            if not args.dry_run:
+                course_dir.mkdir(parents=True, exist_ok=True)
+
+            if cfg.get("announcements", True):
+                scrape_announcements(page, course, course_dir, args.dry_run)
+
+            all_items: list[FileItem] = []
+            visited: set[str] = set()
+            menu = collect_menu_links(page, course)
+            log("    内容区: " + (", ".join(n for _, n in menu) or "(无)"))
+            for area_url, area_name in menu:
+                all_items += find_files(page, area_url, area_name, 1, max_depth, keywords, visited)
+
+            # 去重（同一文件可能出现在多个位置）
+            uniq: dict[str, FileItem] = {}
+            for it in all_items:
+                uniq.setdefault(it.url, it)
+            log(f"    发现 {len(uniq)} 个文件")
+
+            # 课程目录下已有文件索引（含你手工整理的历史文件），用于去重
+            index: dict[str, Path] = {}
+            if course_dir.exists():
+                for p in course_dir.rglob("*"):
+                    if not p.is_file() or ".git" in p.parts or ".venv" in p.parts:
+                        continue
+                    index.setdefault(p.name.lower(), p)
+                    if p.stat().st_size > 50_000:  # 大文件再按「体积+后缀」去重
+                        index.setdefault(f"__size__{p.stat().st_size}{p.suffix.lower()}", p)
+
+            for it in uniq.values():
+                status, name = download_item(ctx.request, it, course_dir, args.dry_run, index)
+                stats[status] += 1
+                if status == "downloaded":
+                    log(f"    ↓ [{it.category}] {name}")
+                elif status == "would-download":
+                    log(f"    ? [{it.category}] {name} (dry-run)")
+                elif status == "empty":
+                    log(f"    ! [{it.category}] {name} 内容为空，跳过")
+
+        ctx.close()
+        browser.close()
+    release_session(session)
+
+    log("\n========== 汇总 ==========")
+    if args.dry_run:
+        log(f"待下载: {stats['would-download']} 个文件（未实际下载）")
+    else:
+        log(f"新下载 {stats['downloaded']} 个，已存在跳过 {stats['exists']} 个")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

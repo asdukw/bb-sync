@@ -1,0 +1,19 @@
+# 凭据与登录态（绝不入库）
+.env
+.browser-profile/
+
+# 本地运行时
+.venv/
+__pycache__/
+*.pyc
+.steel/
+steel*.log
+
+# 运行时生成的调试产物（debug_*.py 调试脚本保留入库）
+debug_*.png
+debug_*.html
+debug_*.txt
+
+# 个人工作区与课程资料（课程资料属版权内容，禁止公开）
+.workbuddy/
+courses/
