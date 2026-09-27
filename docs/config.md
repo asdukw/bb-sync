@@ -4,7 +4,7 @@
 
 ## 配置文件在哪
 
-- **位置**：`~/.bb-sync/config.yaml`（Windows 即 `C:\Users\<你>\.bb-sync\config.yaml`）
+- **默认位置**：`~/.bb-sync/config.yaml`（Windows 即 `C:\Users\<你>\.bb-sync\config.yaml`）
 - **自动生成**：首次执行同步（`bb-sync run`）或修改配置时，如果找不到配置，
   会自动生成一份默认配置到上述位置
 - **优先级**：当前工作目录下的 `config.yaml` 优先于 `~/.bb-sync/` 里的（方便项目内覆盖）；
@@ -163,4 +163,4 @@ max_depth: 2
 - **改了配置不生效** → 确认改的是实际生效的那份：当前目录和 `~/.bb-sync/` 可能各有一份，
   优先读当前目录的。`bb-sync config path` 可确认。
 - **`--root` 和 `root` 都写了用哪个** → 命令行 `--root` 优先。
-- **恢复默认配置** → 删掉 `~/.bb-sync/config.yaml`，下次运行会自动重新生成。
+- **恢复默认配置** → 先运行 `bb-sync config path` 确认实际文件，再按需删除用户配置；下次运行会自动重新生成。当前目录存在 `config.yaml` 时，应先检查该文件，而不是只处理 `~/.bb-sync/`。
