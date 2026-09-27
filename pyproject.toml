@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bb-sync"
-version = "1.0.0"
+version = "1.0.1"
 description = "Blackboard 课程资源自动同步：登录 ADFS SSO，增量下载课件/作业/指导与公告"
 readme = "README.md"
 license = { file = "LICENSE" }

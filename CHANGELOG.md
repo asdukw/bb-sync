@@ -2,6 +2,20 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.0.1] — 2026-09-28
+
+### 修复
+
+- 同步启动前检查下载根目录所在磁盘或网络共享是否可用。配置指向不存在的盘符
+  （如 `D:/courses`）时，CLI 现在返回退出码 4 和明确的修复提示，不再抛出创建
+  `D:\` 盘根时的 `WinError 3` 堆栈。
+
+### 测试
+
+- 新增下载根目录创建与磁盘不可用的单元测试；测试套件增至 103 例。
+
+---
+
 ## [1.0.0] — 2026-09-28
 
 首个正式版。架构定型、CLI 契约稳定、测试与 CI 就位。
@@ -79,6 +93,7 @@
 
 ---
 
+[1.0.1]: https://github.com/asdukw/bb-sync/releases/tag/v1.0.1
 [1.0.0]: https://github.com/asdukw/bb-sync/releases/tag/v1.0.0
 [0.7.0]: https://github.com/asdukw/bb-sync/releases/tag/v0.7.0
 [0.6.0]: https://github.com/asdukw/bb-sync/releases/tag/v0.6.0
