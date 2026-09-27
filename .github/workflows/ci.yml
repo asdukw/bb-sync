@@ -57,6 +57,9 @@ jobs:
             uv tool install git+https://github.com/${{ github.repository }}
           fi
 
+      - name: Put uv tool bin on PATH
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
       - name: Smoke test
         run: |
           bb-sync --version
