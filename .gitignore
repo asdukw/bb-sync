@@ -8,6 +8,7 @@ __pycache__/
 *.pyc
 .steel/
 steel*.log
+*.egg-info/
 
 # 运行时生成的调试产物（debug_*.py 调试脚本保留入库）
 debug_*.png
