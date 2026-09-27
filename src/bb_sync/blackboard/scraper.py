@@ -12,7 +12,6 @@ Blackboard 经典版的几个关键事实（实测结论，勿轻易改动）:
 
 from __future__ import annotations
 
-import html
 import re
 from datetime import date, datetime
 from pathlib import Path
@@ -300,6 +299,36 @@ def scrape_due_items(page: Page, course: Course, console: Console) -> list[DueIt
     return items
 
 
+def _clean_announcement_text(value: str) -> str:
+    """归一文本：压缩行尾空白，但保留段落和列表产生的换行。"""
+    text = value.replace("\xa0", " ").replace("\r\n", "\n").replace("\r", "\n")
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.split("\n")]
+    while lines and not lines[0]:
+        lines.pop(0)
+    while lines and not lines[-1]:
+        lines.pop()
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines))
+
+
+def build_announcements_markdown(course_title: str, entries: list[dict[str, str]]) -> str:
+    """把结构化公告条目渲染为 ``announcements.md`` 内容。"""
+    lines = [f"# {course_title} — 公告", ""]
+    for entry in entries:
+        title = _clean_announcement_text(entry.get("title", "")).replace("\n", " ") or "(无标题)"
+        posted_on = _clean_announcement_text(entry.get("posted_on", "")).replace("\n", " ")
+        body = _clean_announcement_text(entry.get("body", ""))
+        posted_by = _clean_announcement_text(entry.get("posted_by", ""))
+
+        lines.extend([f"## {title}", ""])
+        if posted_on:
+            lines.extend([f"> {posted_on}", ""])
+        if body:
+            lines.extend([body, ""])
+        if posted_by:
+            lines.extend([f"> {posted_by.replace(chr(10), chr(10) + '> ')}", ""])
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def scrape_announcements(
     page: Page, course: Course, course_dir: Path, dry_run: bool, console: Console
 ) -> int:
@@ -312,30 +341,28 @@ def scrape_announcements(
             timeout=20000,
         )
         page.wait_for_timeout(1000)
-        content = page.content()
-        # 经典版公告结构：ul.announcementList > li（标题 h3 + 正文）
-        blocks = re.findall(
-            r"<li[^>]*class=\"[^\"]*announcement[^\"]*\"[^>]*>(.*?)</li>", content, re.S | re.I
+        # 经典版公告页的 li 本身没有 announcement class；唯一可靠的容器是列表本身。
+        entries: list[dict[str, str]] = page.eval_on_selector_all(
+            "#announcementList > li",
+            """els => els.map(li => {
+                const details = li.querySelector('.details');
+                const body = details?.querySelector('.vtbegenerated');
+                const info = li.querySelector('.announcementInfo');
+                return {
+                    title: (li.querySelector('h3.item, h3')?.innerText || '').trim(),
+                    posted_on: (details?.querySelector('p')?.innerText || '').trim(),
+                    body: (body?.innerText || '').trim(),
+                    posted_by: Array.from(info?.querySelectorAll('p') || [])
+                        .map(p => (p.innerText || '').trim()).filter(Boolean).join('\\n'),
+                };
+            })""",
         )
-        if not blocks:
-            blocks = re.findall(
-                r"<div[^>]*class=\"[^\"]*announcement[^\"]*\"[^>]*>(.*?)</div>",
-                content,
-                re.S | re.I,
-            )
-        lines = [f"# {course.title} — 公告\n"]
-        for b in blocks:
-            b = html.unescape(b)
-            t = re.search(r"<h3[^>]*>(.*?)</h3>", b, re.S | re.I)
-            body = re.sub(r"<h3[^>]*>.*?</h3>", "", b, flags=re.S | re.I)
-            title = html.unescape(re.sub(r"<[^>]+>", " ", t.group(1))).strip() if t else "(无标题)"
-            text = html.unescape(re.sub(r"<[^>]+>", " ", body))
-            text = re.sub(r"\s+", " ", text).strip()
-            lines.append(f"## {title}\n\n{text}\n")
-        count = len(lines) - 1
+        count = len(entries)
         if count and not dry_run:
             course_dir.mkdir(parents=True, exist_ok=True)
-            (course_dir / "announcements.md").write_text("\n".join(lines), encoding="utf-8")
+            (course_dir / "announcements.md").write_text(
+                build_announcements_markdown(course.title, entries), encoding="utf-8"
+            )
             console.log(f"    公告 x{count} → announcements.md")
         return count
     except Exception as exc:  # 公告失败不阻塞主流程
@@ -345,6 +372,7 @@ def scrape_announcements(
 
 __all__ = [
     "categorize",
+    "build_announcements_markdown",
     "collect_menu_links",
     "find_files",
     "make_slug",

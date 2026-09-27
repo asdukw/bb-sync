@@ -702,6 +702,58 @@ def test_scrape_due_items_extracts_only_leaf_rows() -> None:
     assert [item.title for item in items] == ["Homework 1"]
 
 
+def test_scrape_announcements_keeps_distinct_titles_and_bodies(tmp_path: Path) -> None:
+    from bb_sync.blackboard.models import Course
+    from bb_sync.blackboard.scraper import scrape_announcements
+    from bb_sync.core.output import Console
+
+    class FakePage:
+        def goto(self, url: str, **kwargs):
+            assert "course_id=_18443_1" in url
+            return None
+
+        def wait_for_timeout(self, timeout: int) -> None:
+            assert timeout == 1000
+
+        def eval_on_selector_all(self, selector: str, script: str):
+            assert selector == "#announcementList > li"
+            assert "h3.item" in script
+            assert ".vtbegenerated" in script
+            return [
+                {
+                    "title": "DDA5002 Tutorial 1 Recording",
+                    "posted_on": "Posted on: Tuesday, September 15, 2026",
+                    "body": "The recording is now available.\\n\\nPasscode: 6$c$NfbL",
+                    "posted_by": "Posted by: Zhiqi\\nPosted to: DDA5002",
+                },
+                {
+                    "title": "Assignment 1 Released",
+                    "posted_on": "Posted on: Monday, September 14, 2026",
+                    "body": "Homework assignment 1 is now available.",
+                    "posted_by": "Posted by: Junchi\\nPosted to: DDA5002",
+                },
+            ]
+
+    course = Course(bb_id="_18443_1", title="DDA5002:Optimization_L02")
+    course_dir = tmp_path / "DDA5002_Optimization"
+    count = scrape_announcements(
+        FakePage(),  # type: ignore[arg-type]
+        course,
+        course_dir,
+        False,
+        Console(quiet=True),
+    )
+
+    markdown = (course_dir / "announcements.md").read_text(encoding="utf-8")
+    assert count == 2
+    assert "## DDA5002 Tutorial 1 Recording" in markdown
+    assert "## Assignment 1 Released" in markdown
+    assert "The recording is now available." in markdown
+    assert "Homework assignment 1 is now available." in markdown
+    assert markdown.count("Posted by:") == 2
+    assert "(无标题)" not in markdown
+
+
 def test_build_due_markdown_prioritizes_and_sorts() -> None:
     from datetime import date, datetime
 
