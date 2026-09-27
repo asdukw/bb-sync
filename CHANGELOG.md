@@ -2,7 +2,7 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [1.3.0] — 2026-09-28
 
 ### 改进
 
@@ -157,6 +157,7 @@
 
 ---
 
+[1.3.0]: https://github.com/asdukw/bb-sync/releases/tag/v1.3.0
 [1.2.0]: https://github.com/asdukw/bb-sync/releases/tag/v1.2.0
 [1.1.0]: https://github.com/asdukw/bb-sync/releases/tag/v1.1.0
 [1.0.2]: https://github.com/asdukw/bb-sync/releases/tag/v1.0.2
