@@ -24,10 +24,17 @@ from bb_sync import paths
 from bb_sync.core.errors import EnvironmentError_, NetworkError
 from bb_sync.core.output import Console
 
-# 注意：以下路径在模块导入时快照。Steel 只在真实同步时使用，测试不触碰，
-# 因此这里不追求运行时可改写；需要改 home 请通过 `BB_SYNC_HOME` 环境变量
-# 在启动前设置（paths 会在导入时读取它）。
-STEEL_ROOT = paths.BB_SYNC_HOME / ".steel"
+
+def _resolve_steel_root() -> Path:
+    """Steel 安装根目录：默认 ``~/.steel``，可用 ``BB_SYNC_STEEL_ROOT`` 覆盖。"""
+    override = os.environ.get("BB_SYNC_STEEL_ROOT")
+    return Path(override).expanduser() if override else Path.home() / ".steel"
+
+
+# Steel 安装目录固定在用户主目录的 ~/.steel，不跟随 BB_SYNC_HOME：
+# 不同版本、不同配置目录共用同一份后端，避免用户主目录出现多个 .steel。
+# 旧版 BB_SYNC_HOME/.steel 会在 deploy() 时自动迁移/清理。
+STEEL_ROOT = _resolve_steel_root()
 STEEL_DIR = STEEL_ROOT / "api"
 STEEL_LOG = STEEL_ROOT / "steel.log"
 STEEL_URL = os.environ.get("STEEL_URL", "http://127.0.0.1:3000")
@@ -53,6 +60,11 @@ def _node_bin() -> str:
         "未找到 Node.js",
         "浏览器后端需要 Node.js ≥22：winget install OpenJS.NodeJS.LTS",
     )
+
+
+def _npm_bin() -> str | None:
+    """定位 npm（与 Node.js 一起安装，测试可替换）。"""
+    return shutil.which("npm")
 
 
 def detect_browser() -> str | None:
@@ -85,32 +97,111 @@ def detect_browser() -> str | None:
     return next((c for c in candidates if Path(c).exists()), None)
 
 
-def is_deployed() -> bool:
-    """Steel 后端是否已就绪（源码 + 依赖都在）。"""
-    return (STEEL_DIR / "src" / "index.ts").exists()
+def _legacy_steel_root() -> Path:
+    """1.0.x 及更早版本的 Steel 安装目录（``BB_SYNC_HOME/.steel``）。"""
+    return paths.BB_SYNC_HOME / ".steel"
 
 
-def deploy(console: Console = _SILENT) -> None:
-    """自动部署 Steel 后端：下载源码包 + 安装 npm 依赖（首次运行自动触发）。
+def _migrate_legacy_root(console: Console) -> bool:
+    """把旧版 ``BB_SYNC_HOME/.steel`` 迁到新根目录，返回是否迁移成功。
 
-    - 源码走 codeload zip（不依赖 git）；走系统代理，适配本机 Clash 等环境
-    - 依赖安装在 ``.steel/api``（npm workspaces 自动提升到 ``.steel/node_modules``）
-    - husky 等 prepare 脚本失败可忽略，只要 tsx 可执行文件就位即可
+    只在新目录不存在时迁移，绝不覆盖用户已有安装；迁移失败不抛错，
+    后续正常部署会重新下载，避免因旧目录损坏/被占用而无法启动。
     """
+    legacy = _legacy_steel_root()
+    if legacy == STEEL_ROOT or not legacy.exists() or STEEL_ROOT.exists():
+        return False
+    try:
+        STEEL_ROOT.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(legacy), str(STEEL_ROOT))
+    except OSError as exc:
+        console.warn(f"[steel] 迁移旧安装目录失败（将重新部署）: {exc}")
+        return False
+    console.log(f"[steel] 已迁移旧安装目录: {legacy} -> {STEEL_ROOT}")
+    return True
+
+
+def _cleanup_legacy_root(console: Console) -> None:
+    """新安装就绪后清理旧目录，确保电脑里只保留一份 Steel。"""
+    legacy = _legacy_steel_root()
+    if legacy == STEEL_ROOT or not legacy.exists():
+        return
+    try:
+        shutil.rmtree(legacy)
+    except OSError as exc:
+        console.warn(f"[steel] 旧安装目录清理失败（可手动删除 {legacy}）: {exc}")
+        return
+    console.log(f"[steel] 已清理旧安装目录: {legacy}")
+
+
+def is_deployed() -> bool:
+    """Steel 后端是否已就绪（源码 + tsx 依赖都在）。"""
+    return (STEEL_DIR / "src" / "index.ts").exists() and _find_tsx() is not None
+
+
+def _steel_meta_path() -> Path:
+    """部署元数据：标记 ``~/.steel`` 由 bb-sync 安装，并记录源码地址。"""
+    return STEEL_ROOT / ".bb-sync.json"
+
+
+def _read_steel_meta() -> dict[str, object]:
+    try:
+        data = json.loads(_steel_meta_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_steel_meta(console: Console) -> None:
+    payload = {
+        "tool": "bb-sync",
+        "schema": 1,
+        "zip_url": STEEL_ZIP_URL,
+        "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    try:
+        _steel_meta_path().write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+    except OSError as exc:
+        console.warn(f"[steel] 写入安装元数据失败（不影响使用）: {exc}")
+
+
+def _needs_upgrade() -> bool:
+    """bb-sync 装的旧版本（记录的源码地址与当前不一致）需要更新。"""
+    meta = _read_steel_meta()
+    return meta.get("tool") == "bb-sync" and meta.get("zip_url") != STEEL_ZIP_URL
+
+
+def _unique_backup_path(kind: str) -> Path:
+    """为安装目录生成同级的 ``.steel.<kind>-<时间戳>`` 备份路径。"""
+    base = f"{STEEL_ROOT.name}.{kind}-{time.strftime('%Y%m%d-%H%M%S')}"
+    candidate = STEEL_ROOT.with_name(base)
+    seq = 2
+    while candidate.exists():
+        candidate = STEEL_ROOT.with_name(f"{base}-{seq}")
+        seq += 1
+    return candidate
+
+
+def _quarantine_broken_root(console: Console) -> None:
+    """残缺/损坏的目录不直接删：整体改名备份，保留排查线索。"""
+    backup = _unique_backup_path("broken")
+    try:
+        shutil.move(str(STEEL_ROOT), str(backup))
+    except OSError as exc:
+        raise EnvironmentError_(
+            f"Steel 目录不可用且无法重命名: {STEEL_ROOT}",
+            "请先关闭正在运行的 Steel/Node 进程后重试；也可手动删除该目录",
+        ) from exc
+    console.warn(f"[steel] 检测到不可用的旧目录，已备份为: {backup}")
+
+
+def _download_source(console: Console, tmp_dir: Path) -> Path:
+    """下载源码 zip 并解压到 tmp_dir，返回解压出的项目根目录。"""
     import zipfile
 
-    _node_bin()  # 提前给出友好的 Node.js 缺失提示
-    npm = shutil.which("npm")
-    if not npm:
-        raise EnvironmentError_("未找到 npm", "请安装 Node.js（自带 npm）后重试")
-
-    STEEL_ROOT.parent.mkdir(parents=True, exist_ok=True)
-    if STEEL_ROOT.exists():  # 清理残缺目录后重装
-        console.log(f"[steel] 清理残缺目录: {STEEL_ROOT}")
-        shutil.rmtree(STEEL_ROOT)
-
-    # 1) 下载源码 zip（流式写入 + 进度提示）
-    zip_path = STEEL_ROOT.parent / "steel-browser.zip"
+    zip_path = tmp_dir / "steel-browser.zip"
     console.log("[steel] 下载 steel-browser 源码 ...")
     req = request.Request(STEEL_ZIP_URL, headers={"User-Agent": "bb-sync"})
     try:
@@ -127,17 +218,54 @@ def deploy(console: Console = _SILENT) -> None:
             "请检查网络/代理是否可访问 github.com（Clash 用户请确认系统代理已开启）",
         ) from exc
 
-    # 2) 解压：zip 根目录为 steel-browser-main/，移到 .steel/
-    tmp_dir = STEEL_ROOT.parent / ".steel-tmp"
-    shutil.rmtree(tmp_dir, ignore_errors=True)
     with zipfile.ZipFile(zip_path) as zf:
         zf.extractall(tmp_dir)
-    shutil.move(str(tmp_dir / "steel-browser-main"), str(STEEL_ROOT))
-    shutil.rmtree(tmp_dir, ignore_errors=True)
-    zip_path.unlink()
-    console.log(f"[steel] 源码已就位: {STEEL_ROOT}")
+    source = tmp_dir / "steel-browser-main"
+    if not source.is_dir():
+        raise EnvironmentError_(
+            "Steel 源码包结构异常（未找到 steel-browser-main 目录）",
+            "可能是上游仓库结构变更，请反馈该问题后重试",
+        )
+    return source
 
-    # 3) 安装依赖（husky 等 prepare 脚本失败可忽略，以 tsx 是否就位为准）
+
+def _install_source_tree(source: Path) -> Path | None:
+    """把新源码放到 STEEL_ROOT，返回换下来的旧目录（没有则为 None）。
+
+    已有安装先整体改名为 ``.steel.old-<时间戳>`` 再换入新版本：
+    换入失败会自动回滚，旧备份由调用方在依赖装好后删除。
+    """
+    if not STEEL_ROOT.exists():
+        shutil.move(str(source), str(STEEL_ROOT))
+        return None
+
+    backup = _unique_backup_path("old")
+    try:
+        shutil.move(str(STEEL_ROOT), str(backup))
+    except OSError as exc:
+        raise EnvironmentError_(
+            f"更新 Steel 后端失败，旧目录被占用: {STEEL_ROOT}",
+            "请先关闭正在运行的 Steel/Node 进程后重试",
+        ) from exc
+    try:
+        shutil.move(str(source), str(STEEL_ROOT))
+    except OSError as exc:
+        _rollback_old_root(backup)
+        raise EnvironmentError_(f"更新 Steel 后端失败: {exc}", "旧安装已回滚到原位置") from exc
+    return backup
+
+
+def _rollback_old_root(backup: Path) -> None:
+    """升级失败时用备份恢复原安装（恢复不了也不掩盖原始错误）。"""
+    shutil.rmtree(STEEL_ROOT, ignore_errors=True)
+    if STEEL_ROOT.exists():
+        return  # 新目录被占用删不掉时保留备份，避免把旧安装嵌套进去
+    with contextlib.suppress(OSError):
+        shutil.move(str(backup), str(STEEL_ROOT))
+
+
+def _install_dependencies(npm: str, console: Console) -> None:
+    """在 STEEL_DIR 执行 npm install；是否就绪以 tsx 为准。"""
     console.log("[steel] 安装 npm 依赖（首次需几分钟，请耐心等待）...")
     STEEL_LOG.parent.mkdir(parents=True, exist_ok=True)
     with open(STEEL_LOG, "a", encoding="utf-8") as logf:
@@ -163,11 +291,65 @@ def deploy(console: Console = _SILENT) -> None:
             f"Steel 依赖安装失败，请查看日志: {STEEL_LOG}",
             f"npm 输出末尾:\n{tail}",
         )
+
+
+def deploy(console: Console = _SILENT) -> None:
+    """自动部署 Steel 后端：下载源码包 + 安装 npm 依赖（首次运行自动触发）。
+
+    已存在的 ``~/.steel`` 按状态处理，绝不静默删除用户文件：
+
+    - 就绪（源码 + tsx 依赖都在）→ 直接复用，跳过下载与安装
+    - bb-sync 装的旧版本（元数据里的源码地址与当前不一致）→ 下载后原地更新
+    - 残缺/损坏 → 备份为 ``.steel.broken-<时间戳>`` 后重装
+    - 旧版 ``BB_SYNC_HOME/.steel`` → 自动迁移复用，随后清理旧目录
+
+    源码走 codeload zip（不依赖 git）；依赖安装在 ``.steel/api``
+    （npm workspaces 自动提升到 ``.steel/node_modules``）。
+    """
+    if STEEL_ROOT.exists() and not is_deployed():
+        _quarantine_broken_root(console)
+    migrated = _migrate_legacy_root(console)
+
+    if is_deployed():
+        if not _needs_upgrade():
+            console.log(f"[steel] 复用已就绪的后端: {STEEL_ROOT}")
+            if migrated and not _read_steel_meta():
+                _write_steel_meta(console)  # 旧版安装补记归属，便于日后升级
+            _cleanup_legacy_root(console)
+            return
+        console.log(f"[steel] 检测到 bb-sync 安装的旧版本，准备更新: {STEEL_ROOT}")
+
+    _node_bin()  # 提前给出友好的 Node.js 缺失提示
+    npm = _npm_bin()
+    if not npm:
+        raise EnvironmentError_("未找到 npm", "请安装 Node.js（自带 npm）后重试")
+
+    STEEL_ROOT.parent.mkdir(parents=True, exist_ok=True)
+    tmp_dir = STEEL_ROOT.parent / ".steel-tmp"
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    old_root: Path | None = None
+    try:
+        source = _download_source(console, tmp_dir)
+        old_root = _install_source_tree(source)
+        console.log(f"[steel] 源码已就位: {STEEL_ROOT}")
+        _install_dependencies(npm, console)
+    except BaseException:
+        if old_root is not None:
+            _rollback_old_root(old_root)
+        raise
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    if old_root is not None:
+        shutil.rmtree(old_root, ignore_errors=True)
+    _write_steel_meta(console)
+    _cleanup_legacy_root(console)
     console.success("Steel 后端部署完成")
 
 
 def _find_tsx() -> Path | None:
-    """tsx 可执行入口：npm workspaces 会把依赖提升到 ``.steel/node_modules``。"""
+    """tsx 可执行入口：npm workspaces 会把依赖提升到 ``~/.steel/node_modules``。"""
     return next(
         (
             d / "node_modules" / "tsx" / "dist" / "cli.mjs"
@@ -210,7 +392,7 @@ def start_server(console: Console = _SILENT, headed: bool = False, wait: int = 1
     if tsx is None:
         raise EnvironmentError_(
             f"Steel 依赖未就绪: {STEEL_LOG}",
-            "重新运行会自动重装，或手动删除 ~/.bb-sync/.steel 后重试",
+            f"重新运行会自动重装，或手动删除 {STEEL_ROOT} 后重试",
         )
 
     env = dict(os.environ)
@@ -252,7 +434,7 @@ def start_server(console: Console = _SILENT, headed: bool = False, wait: int = 1
             return
     raise EnvironmentError_(
         f"Steel 服务端启动超时: {STEEL_LOG}",
-        "查看日志排查，或删除 ~/.bb-sync/.steel 后重试",
+        f"查看日志排查，或删除 {STEEL_ROOT} 后重试",
     )
 
 
