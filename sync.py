@@ -154,8 +154,24 @@ def make_slug(course: Course) -> str:
     rest = course.title.upper().replace(course.code.upper(), "", 1)
     words = re.findall(r"[A-Za-z][A-Za-z-]{2,}", rest)
     stop = {
-        "THE", "AND", "FOR", "OF", "IN", "WITH", "FROM", "INTO", "USING", "TO",
-        "THEIR", "SEMESTER", "FALL", "SPRING", "SUMMER", "SECTION", "TERM", "PART",
+        "THE",
+        "AND",
+        "FOR",
+        "OF",
+        "IN",
+        "WITH",
+        "FROM",
+        "INTO",
+        "USING",
+        "TO",
+        "THEIR",
+        "SEMESTER",
+        "FALL",
+        "SPRING",
+        "SUMMER",
+        "SECTION",
+        "TERM",
+        "PART",
     }
     keys: list[str] = []
     total = 0
