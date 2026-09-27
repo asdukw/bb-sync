@@ -2,6 +2,27 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.1.0] — 2026-09-28
+
+### 新增
+
+- 普通命令成功后会检查 GitHub Releases（最多每天一次），发现新版本时在 stderr
+  提示执行 `uv tool upgrade bb-sync`；检查失败静默跳过，不影响命令结果，也不会
+  污染 `--json` 的 stdout。
+- `bb-sync config set/unset root` 默认同步更新用户级配置，避免当前目录有项目配置时，
+  换目录运行仍使用旧下载目录；相对路径会转为绝对路径，可用 `--no-sync-home`
+  只修改当前生效文件。
+
+### 文档
+
+- README 精简为面向学生的安装与使用路径；开发约定移入 `AGENTS.md` 和
+  `CONTRIBUTING.md`。
+
+### 测试
+
+- 新增自动更新检查、缓存、禁用开关、stdout/stderr 分流，以及下载目录同步与
+  `--no-sync-home` 的测试。
+
 ## [1.0.2] — 2026-09-28
 
 ### 改进
@@ -114,6 +135,8 @@
 
 ---
 
+[1.1.0]: https://github.com/asdukw/bb-sync/releases/tag/v1.1.0
+[1.0.2]: https://github.com/asdukw/bb-sync/releases/tag/v1.0.2
 [1.0.1]: https://github.com/asdukw/bb-sync/releases/tag/v1.0.1
 [1.0.0]: https://github.com/asdukw/bb-sync/releases/tag/v1.0.0
 [0.7.0]: https://github.com/asdukw/bb-sync/releases/tag/v0.7.0
