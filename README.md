@@ -18,6 +18,9 @@ powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 
 # 2. 安装为全局 CLI 命令
 uv tool install git+https://github.com/asdukw/bb-sync
+
+# 更新到最新版
+uv tool upgrade bb-sync
 ```
 
 ## 日常使用
