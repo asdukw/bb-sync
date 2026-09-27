@@ -35,7 +35,7 @@ def test_no_args_prints_help_and_exit_zero(cli) -> None:
     result = cli([])
     assert result.exit_code == 0
     assert "Usage" in result.stdout or "用法" in result.stdout
-    for name in ("run", "doctor", "config", "auth", "course"):
+    for name in ("run", "due", "doctor", "config", "auth", "course"):
         assert name in result.stdout
 
 
@@ -96,6 +96,7 @@ def test_missing_required_argument_exits_two(cli) -> None:
     "args",
     [
         ["run", "--help"],
+        ["due", "--help"],
         ["doctor", "--help"],
         ["config", "--help"],
         ["auth", "--help"],
@@ -117,6 +118,31 @@ def test_course_list_help_shows_list(cli) -> None:
     result = cli(["course", "--help"])
     assert result.exit_code == 0
     assert "list" in result.stdout
+
+
+def test_due_command_emits_json_and_passes_filters(cli, config_file: Path, monkeypatch) -> None:
+    """``due`` 复用课程过滤与 root 解析，并输出可脚本消费的结果。"""
+    from bb_sync.blackboard.models import DueStats
+    from bb_sync.core import service
+
+    config_file.write_text("root: ~/courses\ninclude: all\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def fake_run_due(options):
+        captured["root"] = options.root
+        captured["courses"] = options.courses
+        return DueStats(path=str(options.root / "due.md"), courses=["CSC5010"])
+
+    monkeypatch.setattr(service, "run_due", fake_run_due)
+    output_root = config_file.parent / "due-output"
+
+    result = cli(["--json", "due", "--course", "CSC5010", "--root", str(output_root)])
+
+    assert result.exit_code == 0
+    assert captured == {"root": output_root, "courses": ["CSC5010"]}
+    payload = json.loads(result.stdout)
+    assert payload["path"] == str(output_root / "due.md")
+    assert payload["courses"] == ["CSC5010"]
 
 
 def test_config_subcommands_present(cli) -> None:

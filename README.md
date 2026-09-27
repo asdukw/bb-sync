@@ -1,6 +1,6 @@
 # bb-sync — Blackboard 课程资源自动同步
 
-bb-sync 会登录香港中文大学（深圳）的 Blackboard，把课件、作业和指导增量下载到本地，并把公告保存为 Markdown。重复运行时会跳过已经下载的文件。
+bb-sync 会登录香港中文大学（深圳）的 Blackboard，把课件、作业和指导增量下载到本地，并把公告与全部课程的待办整理成 Markdown。重复运行时会跳过已经下载的文件。
 
 - 仅适配 `bb.cuhk.edu.cn` 和它的 ADFS 登录流程。
 - 当前仅支持 Windows PowerShell。
@@ -57,6 +57,7 @@ bb-sync run
 - 作业 → `assignments/`
 - 指导 / 实验 → `tutorials/`
 - 公告 → `announcements.md`
+- 全部课程待办 → `due.md`（按逾期、今天、明天、未来 7 天等优先级排列）
 
 要修改下载目录：
 
@@ -74,6 +75,8 @@ bb-sync config set root "D:/University/courses"
 | `bb-sync run --headed` | 显示浏览器，适合首次登录或 MFA |
 | `bb-sync run --course CSC5010` | 只同步指定课程，可重复使用 |
 | `bb-sync run --dry-run` | 只预览，不下载 |
+| `bb-sync due` | 扫描全部课程主页的 Due / To Do，生成 `due.md` |
+| `bb-sync due --course CSC5010` | 只整理指定课程的待办 |
 | `bb-sync course list` | 列出账号下的课程 |
 | `bb-sync doctor` | 检查环境是否就绪 |
 | `bb-sync --help` | 查看完整帮助 |

@@ -644,6 +644,126 @@ def test_sanitize_filename_normalizes_unicode() -> None:
     assert sanitize_filename("ＡＢＣ") == "ABC"
 
 
+# ---------------------------------------------------------------- Due / To Do
+
+
+def test_parse_due_date_supports_blackboard_formats() -> None:
+    from datetime import date
+
+    from bb_sync.blackboard.scraper import parse_due_date
+
+    assert parse_due_date(" - Due 10/21/26") == date(2026, 10, 21)
+    assert parse_due_date("Due 1/2/2027") == date(2027, 1, 2)
+    assert parse_due_date("No date") is None
+    assert parse_due_date("Due 13/40/26") is None
+
+
+def test_parse_due_entries_normalizes_and_deduplicates() -> None:
+    from bb_sync.blackboard.models import Course
+    from bb_sync.blackboard.scraper import parse_due_entries
+
+    course = Course(bb_id="_18482_1", title="CSC5010: Artificial Intelligence")
+    entries = [
+        {"title": "  Homework   1  ", "due_text": " - Due 10/10/26 "},
+        {"title": "Homework 1", "due_text": "- Due 10/10/2026"},
+        {"title": "", "due_text": "Due 10/11/26"},
+    ]
+
+    items = parse_due_entries(entries, course)
+
+    assert len(items) == 1
+    assert items[0].title == "Homework 1"
+    assert items[0].course_code == "CSC5010"
+    assert items[0].due_date is not None
+    assert items[0].due_date.isoformat() == "2026-10-10"
+
+
+def test_scrape_due_items_extracts_only_leaf_rows() -> None:
+    from bb_sync.blackboard.models import Course
+    from bb_sync.blackboard.scraper import scrape_due_items
+    from bb_sync.core.output import Console
+
+    class FakePage:
+        def goto(self, url: str, **kwargs):
+            assert "id=_18482_1" in url
+            return None
+
+        def wait_for_timeout(self, timeout: int) -> None:
+            assert timeout == 1200
+
+        def eval_on_selector_all(self, selector: str, script: str):
+            assert selector == "#pastDueView li, #dueView li"
+            assert "querySelector('.due')" in script
+            return [{"title": "Homework 1", "due_text": "- Due 10/10/26"}]
+
+    course = Course(bb_id="_18482_1", title="CSC5010: Artificial Intelligence")
+    items = scrape_due_items(FakePage(), course, Console(quiet=True))  # type: ignore[arg-type]
+
+    assert [item.title for item in items] == ["Homework 1"]
+
+
+def test_build_due_markdown_prioritizes_and_sorts() -> None:
+    from datetime import date, datetime
+
+    from bb_sync.blackboard.models import Course, DueItem
+    from bb_sync.core.due import build_due_markdown
+
+    courses = [
+        Course(bb_id="_1_1", title="CSC5010: Artificial Intelligence"),
+        Course(bb_id="_2_1", title="MDS5122: Deep Learning"),
+    ]
+    items = [
+        DueItem(
+            "_2_1", "MDS5122", courses[1].title, "Assignment_1", date(2026, 10, 21), "Due 10/21/26"
+        ),
+        DueItem(
+            "_1_1", "CSC5010", courses[0].title, "Homework 2", date(2026, 10, 10), "Due 10/10/26"
+        ),
+        DueItem(
+            "_1_1", "CSC5010", courses[0].title, "Homework 1", date(2026, 10, 10), "Due 10/10/26"
+        ),
+        DueItem("_1_1", "CSC5010", courses[0].title, "Overdue", date(2026, 9, 27), "Due 09/27/26"),
+        DueItem(
+            "_1_1", "CSC5010", courses[0].title, "Today task", date(2026, 9, 28), "Due 09/28/26"
+        ),
+        DueItem("_1_1", "CSC5010", courses[0].title, "Unknown", None, ""),
+    ]
+
+    markdown = build_due_markdown(
+        courses,
+        items,
+        generated_at=datetime(2026, 9, 28, 8, 30),
+        today=date(2026, 9, 28),
+    )
+
+    assert markdown.index("## 已逾期（1）") < markdown.index("## 今天（1）")
+    assert markdown.index("## 今天（1）") < markdown.index("## 之后（3）")
+    assert markdown.index("## 之后（3）") < markdown.index("## 日期未知（1）")
+    assert "**2026-09-27**（逾期 1 天）" in markdown
+    assert "**2026-09-28**（今天）" in markdown
+    assert markdown.index("Homework 1") < markdown.index("Homework 2")
+    assert "Assignment\\_1" in markdown
+    assert "[CSC5010](https://bb.cuhk.edu.cn/webapps/blackboard/execute/launcher" in markdown
+
+
+def test_build_due_markdown_empty_and_partial_failure() -> None:
+    from datetime import date, datetime
+
+    from bb_sync.blackboard.models import Course
+    from bb_sync.core.due import build_due_markdown
+
+    markdown = build_due_markdown(
+        [Course(bb_id="_1_1", title="CSC5010")],
+        [],
+        failed=1,
+        generated_at=datetime(2026, 9, 28, 8, 30),
+        today=date(2026, 9, 28),
+    )
+
+    assert "当前没有待办事项" in markdown
+    assert "1 门课程抓取失败" in markdown
+
+
 # ---------------------------------------------------------------- 下载推断
 
 

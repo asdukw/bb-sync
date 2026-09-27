@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import date
 
 BASE = "https://bb.cuhk.edu.cn"
 
@@ -46,6 +47,33 @@ class FileItem:
     folder_hint: str = ""  # 内容区路径提示
 
 
+@dataclass(frozen=True)
+class DueItem:
+    """课程主页 Due / To Do 模块中的一项任务。"""
+
+    course_id: str
+    course_code: str
+    course_title: str
+    title: str
+    due_date: date | None
+    due_text: str = ""
+
+    @property
+    def course_label(self) -> str:
+        """优先显示课程代码，没有代码时退回原始标题。"""
+        return self.course_code or self.course_title or self.course_id
+
+    def as_dict(self) -> dict[str, str | None]:
+        return {
+            "course_id": self.course_id,
+            "course_code": self.course_code,
+            "course_title": self.course_title,
+            "title": self.title,
+            "due_date": self.due_date.isoformat() if self.due_date else None,
+            "due_text": self.due_text,
+        }
+
+
 @dataclass
 class SyncStats:
     """一次同步的统计结果。"""
@@ -73,6 +101,29 @@ class SyncStats:
         }
 
 
+@dataclass
+class DueStats:
+    """一次 ``bb-sync due`` 的结果。"""
+
+    path: str = ""
+    items: list[DueItem] = field(default_factory=list)
+    failed: int = 0
+    courses: list[str] = field(default_factory=list)
+
+    @property
+    def total(self) -> int:
+        return len(self.items)
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "path": self.path,
+            "total": self.total,
+            "failed": self.failed,
+            "courses": self.courses,
+            "items": [item.as_dict() for item in self.items],
+        }
+
+
 __all__ = [
     "ADFS_NEXT",
     "ADFS_PASS",
@@ -81,6 +132,8 @@ __all__ = [
     "BASE",
     "LOGIN_URL",
     "Course",
+    "DueItem",
+    "DueStats",
     "FileItem",
     "SyncStats",
 ]

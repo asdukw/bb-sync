@@ -36,6 +36,7 @@ from bb_sync.core.errors import BbSyncError, ExitCode, exit_code_for
 #: 命令名 → (模块名, 一句话帮助)
 SUBCOMMANDS: dict[str, tuple[str, str]] = {
     "run": ("run", "执行一次课程同步"),
+    "due": ("due", "整理全部课程的待办到 due.md"),
     "doctor": ("doctor", "体检：检查前置条件（git / Node / 浏览器 / 网络等）"),
     "config": ("config", "查看 / 修改配置（如默认下载目录）"),
     "auth": ("auth", "凭据管理：登录录入 / 退出 / 查看状态"),
@@ -44,7 +45,7 @@ SUBCOMMANDS: dict[str, tuple[str, str]] = {
 
 #: 扁平命令（无下级子命令）：模块里直接定义 ``<name>_cmd`` 函数，
 #: 其余模块用 ``app = typer.Typer(...)`` 声明为命令组
-FLAT_COMMANDS = frozenset({"run", "doctor"})
+FLAT_COMMANDS = frozenset({"run", "due", "doctor"})
 
 
 def _notify_update_after_command(result: Any, **_: Any) -> Any:

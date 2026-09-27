@@ -36,6 +36,7 @@ bb-sync --json doctor       | jq '.ok'
 | --- | --- |
 | `course list` | 数组：`[{"id","code","title","folder"}, ...]` |
 | `run` | 对象：`{"downloaded","exists","would_download","empty","failed","courses"}` |
+| `due` | 对象：`{"path","total","failed","courses","items"}`；`items` 含课程、标题与 ISO 日期 |
 | `doctor` | 对象：`{"ok": bool, "checks": [{"label","ok","detail","hint","required"}]}` |
 | `doctor --list` | 对象：`{"checks": ["python","git", ...]}` |
 | `auth status` | 对象：`{"configured","source","account"}`（account 已脱敏） |

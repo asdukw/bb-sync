@@ -17,10 +17,11 @@ from playwright.sync_api import sync_playwright
 
 from bb_sync.blackboard import downloader, scraper
 from bb_sync.blackboard.login import ensure_login
-from bb_sync.blackboard.models import Course, FileItem, SyncStats
+from bb_sync.blackboard.models import Course, DueItem, DueStats, FileItem, SyncStats
 from bb_sync.browser import steel
+from bb_sync.core import due
 from bb_sync.core.config import Settings
-from bb_sync.core.errors import ConfigError, NotFoundError
+from bb_sync.core.errors import ConfigError, NetworkError, NotFoundError
 from bb_sync.core.output import Console
 
 
@@ -34,6 +35,17 @@ class SyncOptions:
     console: Console
     headed: bool = False
     dry_run: bool = False
+    courses: list[str] | None = None
+
+
+@dataclass
+class DueOptions:
+    """``bb-sync due`` 的运行时选项。"""
+
+    settings: Settings
+    root: Path
+    console: Console
+    headed: bool = False
     courses: list[str] | None = None
 
 
@@ -241,12 +253,76 @@ def list_courses(options: SyncOptions) -> list[Course]:
     return courses
 
 
+def run_due(options: DueOptions) -> DueStats:
+    """扫描课程主页的 To Do 模块，并生成全局 ``due.md``。"""
+    console = options.console
+    settings = options.settings
+    first_run = ensure_root_directory(options.root)
+    if first_run:
+        console.log(f"[info] 待办文件将写入 {options.root / 'due.md'}")
+
+    include = options.courses if options.courses else settings.include
+    stats = DueStats(path=str(options.root / "due.md"))
+
+    steel.ensure_server(console, options.headed)
+    session = steel.create_session(options.headed, console)
+    try:
+        with sync_playwright() as p:
+            browser, ctx, page = steel.connect(p, session)
+            ensure_login(page, console, headed=options.headed)
+
+            courses = scraper.scrape_courses(page, include, console)
+            if not courses:
+                raise NotFoundError(
+                    "未发现课程",
+                    "确认已登录且账号下有课程；也可用 bb-sync course list 先看看",
+                )
+
+            items: list[DueItem] = []
+            for course in courses:
+                stats.courses.append(course.code or course.title)
+                try:
+                    found = scraper.scrape_due_items(page, course, console)
+                except Exception as exc:  # 单门课失败不阻断其它课程
+                    stats.failed += 1
+                    console.warn(f"[due] {course.code or course.title} 抓取失败: {exc}")
+                    continue
+                items.extend(found)
+                console.log(f"    {course.code or course.title}: 待办 x{len(found)}")
+
+            if stats.failed == len(courses):
+                raise NetworkError(
+                    "所有课程主页都抓取失败",
+                    "检查网络连接与登录状态，或先用 bb-sync run --headed 刷新登录态",
+                )
+
+            stats.items = due.sort_due_items(items)
+            due.write_due_markdown(
+                options.root / "due.md",
+                courses,
+                items,
+                failed=stats.failed,
+            )
+            ctx.close()
+            browser.close()
+    finally:
+        steel.release_session(session, console)
+
+    console.rule("待办汇总")
+    console.log(f"发现 {stats.total} 项待办，已写入 {stats.path}")
+    if stats.failed:
+        console.warn(f"有 {stats.failed} 门课程抓取失败，due.md 可能不完整")
+    return stats
+
+
 __all__ = [
     "SyncOptions",
+    "DueOptions",
     "ensure_root_directory",
     "folder_name",
     "list_courses",
     "plan_root",
     "run_sync",
+    "run_due",
     "sync_course",
 ]

@@ -14,12 +14,20 @@ from __future__ import annotations
 
 import html
 import re
+from datetime import date, datetime
 from pathlib import Path
 
 from playwright.sync_api import Page
 from playwright.sync_api import TimeoutError as PWTimeout
 
-from bb_sync.blackboard.models import _PORTAL_COURSES, _PORTAL_HOME, BASE, Course, FileItem
+from bb_sync.blackboard.models import (
+    _PORTAL_COURSES,
+    _PORTAL_HOME,
+    BASE,
+    Course,
+    DueItem,
+    FileItem,
+)
 from bb_sync.core.output import Console
 
 # ---------------------------------------------------------------- 文本工具
@@ -171,6 +179,50 @@ def sanitize_filename(name: str) -> str:
     return name[:150] or "untitled"
 
 
+_DUE_DATE_RE = re.compile(r"(\d{1,2}/\d{1,2}/\d{2,4})")
+
+
+def parse_due_date(text: str) -> date | None:
+    """解析 Blackboard Due 文本里的 ``MM/DD/YY`` 或 ``MM/DD/YYYY`` 日期。"""
+    match = _DUE_DATE_RE.search(text or "")
+    if not match:
+        return None
+    raw = match.group(1)
+    for fmt in ("%m/%d/%y", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def parse_due_entries(entries: list[dict[str, str]], course: Course) -> list[DueItem]:
+    """把浏览器提取的原始 Due 行整理成领域对象，并去掉跨区块重复项。"""
+    items: list[DueItem] = []
+    seen: set[tuple[str, str]] = set()
+    for entry in entries:
+        title = re.sub(r"\s+", " ", str(entry.get("title") or "")).strip()
+        due_text = re.sub(r"\s+", " ", str(entry.get("due_text") or "")).strip()
+        if not title:
+            continue
+        due_date = parse_due_date(due_text)
+        key = (title, due_date.isoformat() if due_date else due_text)
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(
+            DueItem(
+                course_id=course.bb_id,
+                course_code=course.code,
+                course_title=course.title,
+                title=title,
+                due_date=due_date,
+                due_text=due_text,
+            )
+        )
+    return items
+
+
 def find_files(
     page: Page,
     url: str,
@@ -226,6 +278,28 @@ def find_files(
     return items
 
 
+def scrape_due_items(page: Page, course: Course, console: Console) -> list[DueItem]:
+    """抓取课程主页 To Do 模块中的逾期与待办项目。"""
+    home_url = f"{BASE}/webapps/blackboard/execute/launcher?type=Course&id={course.bb_id}"
+    resp = page.goto(home_url, wait_until="domcontentloaded", timeout=30000)
+    page.wait_for_timeout(1200)
+    if resp and resp.status >= 400:
+        raise RuntimeError(f"课程主页返回 HTTP {resp.status}")
+
+    entries = page.eval_on_selector_all(
+        "#pastDueView li, #dueView li",
+        """els => els
+            .filter(e => e.querySelector('.due') && !e.querySelector('li'))
+            .map(e => ({
+                title: (e.querySelector('a:not(.cmimg)')?.innerText || '').trim(),
+                due_text: (e.querySelector('.due')?.innerText || '').trim(),
+            }))""",
+    )
+    items = parse_due_entries(entries, course)
+    console.debug(f"[due] {course.code or course.title}: {len(items)} 项")
+    return items
+
+
 def scrape_announcements(
     page: Page, course: Course, course_dir: Path, dry_run: bool, console: Console
 ) -> int:
@@ -275,7 +349,10 @@ __all__ = [
     "find_files",
     "make_slug",
     "match_category",
+    "parse_due_date",
+    "parse_due_entries",
     "sanitize_filename",
     "scrape_announcements",
     "scrape_courses",
+    "scrape_due_items",
 ]
