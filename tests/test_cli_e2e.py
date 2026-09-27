@@ -169,6 +169,86 @@ def test_config_set_then_get_roundtrip(cli) -> None:
     assert json.loads(result.stdout) == "D:/courses"
 
 
+def test_config_set_root_syncs_home_config(cli, config_file: Path) -> None:
+    """修改 root 时同步用户级配置，保证换目录运行也生效。"""
+    project = Path.cwd() / "config.yaml"
+    project.write_text("root: D:/old\n", encoding="utf-8")
+
+    result = cli(["--json", "config", "set", "root", "D:/courses"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["path"] == str(project)
+    assert payload["synced_path"] == str(config_file)
+    assert "root: D:/courses" in project.read_text(encoding="utf-8")
+    assert "root: D:/courses" in config_file.read_text(encoding="utf-8")
+
+
+def test_config_set_root_uses_home_when_no_project_config(cli, config_file: Path) -> None:
+    """没有项目配置时只写用户级配置，不应产生多余的同步声明。"""
+    result = cli(["--json", "config", "set", "root", "D:/courses"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["path"] == str(config_file)
+    assert "synced_path" not in payload
+    assert "root: D:/courses" in config_file.read_text(encoding="utf-8")
+
+
+def test_config_set_relative_root_syncs_absolute_home_value(
+    cli, config_file: Path, tmp_path: Path
+) -> None:
+    """相对 root 在不同配置文件里基准不同，同步时必须转为绝对路径。"""
+    project = Path.cwd() / "config.yaml"
+    project.write_text("root: D:/old\n", encoding="utf-8")
+
+    result = cli(["--json", "config", "set", "root", "downloads"])
+
+    assert result.exit_code == 0
+    expected = str((tmp_path / "downloads").resolve())
+    assert "root: downloads" in project.read_text(encoding="utf-8")
+    assert f"root: {expected}" in config_file.read_text(encoding="utf-8")
+
+
+def test_config_set_root_can_disable_home_sync(cli, config_file: Path) -> None:
+    """显式的 --no-sync-home 只改当前生效文件。"""
+    project = Path.cwd() / "config.yaml"
+    project.write_text("root: D:/old\n", encoding="utf-8")
+
+    result = cli(["--json", "config", "set", "root", "D:/courses", "--no-sync-home"])
+
+    assert result.exit_code == 0
+    assert "synced_path" not in json.loads(result.stdout)
+    assert not config_file.exists()
+
+
+def test_config_unset_root_syncs_home_config(cli, config_file: Path) -> None:
+    """删除 root 时也同步用户级配置，避免旧默认目录残留。"""
+    project = Path.cwd() / "config.yaml"
+    project.write_text("root: D:/old\n", encoding="utf-8")
+    config_file.write_text("root: D:/old\n", encoding="utf-8")
+
+    result = cli(["--json", "config", "unset", "root"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["synced_path"] == str(config_file)
+    assert "root:" not in project.read_text(encoding="utf-8")
+    assert "root:" not in config_file.read_text(encoding="utf-8")
+
+
+def test_config_set_non_root_does_not_create_home_config(cli, config_file: Path) -> None:
+    """只有 root 需要同步用户级配置，其它键保持原有局部行为。"""
+    project = Path.cwd() / "config.yaml"
+    project.write_text("max_depth: 3\n", encoding="utf-8")
+
+    result = cli(["--json", "config", "set", "max_depth", "5"])
+
+    assert result.exit_code == 0
+    assert "synced_path" not in json.loads(result.stdout)
+    assert not config_file.exists()
+
+
 def test_config_set_preserves_comments(cli, config_file: Path) -> None:
     """行级写入必须保留用户手写的注释（config_store 的核心价值）。"""
     assert cli(["config", "init"]).exit_code == 0

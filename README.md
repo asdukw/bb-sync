@@ -74,6 +74,14 @@ bb-sync run
 bb-sync config set root "D:/University/courses"
 ```
 
+如果当前目录有自己的 `config.yaml`，命令会同时更新它和 `~/.bb-sync/config.yaml`，
+保证从其它目录运行 `bb-sync` 时也使用新目录；只想修改当前项目的配置时加
+`--no-sync-home`：
+
+```powershell
+bb-sync config set root "D:/University/courses" --no-sync-home
+```
+
 只修改本次运行的目录：
 
 ```powershell

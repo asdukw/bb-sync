@@ -5,11 +5,12 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import typer
 import yaml
 
+from bb_sync import paths
 from bb_sync.context import Context
 from bb_sync.core import config_store
 from bb_sync.core.config import (
@@ -38,6 +39,49 @@ def _require(ctx: typer.Context) -> Path:
     if not path.exists():
         raise ConfigError(f"配置文件不存在：{path}", "运行 bb-sync config init 生成默认配置")
     return path
+
+
+def _root_for_home(raw: str, target: Path) -> str:
+    """把目标配置里的 root 转成用户级配置中语义相同的值。
+
+    相对路径在不同配置文件中的基准目录不同；同步到 ``BB_SYNC_HOME`` 前必须先
+    按目标配置文件所在目录解析成绝对路径，否则换目录运行时会指向错误位置。
+    """
+    parsed = config_store.parse_value(raw)
+    if not isinstance(parsed, str):
+        return raw
+    value = parsed.strip()
+    if not value:
+        return raw
+    root = Path(value).expanduser()
+    if root.is_absolute() or PureWindowsPath(value).is_absolute():
+        return raw
+    return str((target.parent / root).resolve())
+
+
+def _sync_home_root(
+    target: Path,
+    key: str,
+    raw: str | None,
+    enabled: bool,
+) -> Path | None:
+    """把 root 的改动同步到用户级配置，避免换目录运行时使用旧值。"""
+    if not enabled or key != "root":
+        return None
+    home = paths.BB_SYNC_HOME / paths.CONFIG_NAME
+    if home.resolve() == target.resolve():
+        return None
+    if raw is None:
+        if not home.exists():
+            return None
+        try:
+            config_store.apply_to_file(home, "root", None)
+        except NotFoundError:
+            return None
+    else:
+        ensure_config_file(home)
+        config_store.apply_to_file(home, "root", _root_for_home(raw, target))
+    return home
 
 
 @app.command("path")
@@ -114,28 +158,55 @@ def set_(
     ctx: typer.Context,
     key: str = typer.Argument(..., help="配置键（如 root、course_dirs.CSC5010）"),
     value: str = typer.Argument(..., help="值（YAML 标量或列表，含空格时加引号）"),
+    sync_home: bool = typer.Option(
+        True,
+        "--sync-home/--no-sync-home",
+        help="修改 root 时同步更新用户级配置",
+    ),
 ) -> None:
-    """写入一项配置（永久生效）。"""
+    """写入一项配置（永久生效）；root 默认同步到用户级配置。"""
     app_ctx: Context = ctx.obj
     config_store.parse_value(value)  # 校验 YAML 合法性
     target = _target(ctx)
     ensure_config_file(target)
     action = config_store.apply_to_file(target, key, value)
+    synced = _sync_home_root(target, key, value, sync_home)
     app_ctx.console.success(f"已写入 {target}")
-    app_ctx.console.emit({"path": str(target), "action": action, "key": key, "value": value})
+    if synced is not None:
+        app_ctx.console.success(f"已同步用户配置 {synced}")
+    payload: dict[str, str] = {
+        "path": str(target),
+        "action": action,
+        "key": key,
+        "value": value,
+    }
+    if synced is not None:
+        payload["synced_path"] = str(synced)
+    app_ctx.console.emit(payload)
 
 
 @app.command("unset")
 def unset(
     ctx: typer.Context,
     key: str = typer.Argument(..., help="配置键（如 root、course_dirs.CSC5010）"),
+    sync_home: bool = typer.Option(
+        True,
+        "--sync-home/--no-sync-home",
+        help="删除 root 时同步更新用户级配置",
+    ),
 ) -> None:
-    """删除某项配置（恢复内置默认值）。"""
+    """删除某项配置（恢复内置默认值）；root 默认同步到用户级配置。"""
     app_ctx: Context = ctx.obj
     target = _require(ctx)
     action = config_store.apply_to_file(target, key, None)
+    synced = _sync_home_root(target, key, None, sync_home)
     app_ctx.console.success(f"{action}（{target}）")
-    app_ctx.console.emit({"path": str(target), "action": action, "key": key})
+    if synced is not None:
+        app_ctx.console.success(f"已同步用户配置 {synced}")
+    payload: dict[str, str] = {"path": str(target), "action": action, "key": key}
+    if synced is not None:
+        payload["synced_path"] = str(synced)
+    app_ctx.console.emit(payload)
 
 
 @app.command("edit")

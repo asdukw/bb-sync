@@ -41,7 +41,7 @@ bb-sync --json doctor       | jq '.ok'
 | `auth status` | 对象：`{"configured","source","account"}`（account 已脱敏） |
 | `config show` | 对象：整份配置（等价于解析后的 config.yaml） |
 | `config get <key>` | 该项的值（标量 / 列表 / 对象，视键而定） |
-| `config set/unset` | 对象：`{"path","action","key","value"?}` |
+| `config set/unset` | 对象：`{"path","action","key","value"?,"synced_path"?}`（同步 root 时有 `synced_path`） |
 | `config init` | 对象：`{"path","created": bool}` |
 | `config path` | 纯文本路径（此命令恒为文本，不带 JSON 包装） |
 

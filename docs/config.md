@@ -43,6 +43,7 @@ bb-sync config init                # 生成一份默认配置（已存在则不�
 bb-sync config show                # 显示整份配置
 bb-sync config get root            # 读取某一项
 bb-sync config set root D:/courses # 修改默认下载目录（永久生效）
+bb-sync config set root D:/courses --no-sync-home # 只改当前生效文件
 bb-sync config set include "[CSC5010, DDA5002]"   # 值含空格/列表时记得加引号
 bb-sync config set course_dirs.CSC5010 CSC5010_AI # 点号写法修改嵌套键
 bb-sync config unset root          # 删除某项（恢复内置默认值）
@@ -51,6 +52,11 @@ bb-sync config edit                # 用系统编辑器打开配置文件
 
 `config` 操作的是「实际生效」的那份配置：当前目录有 `config.yaml` 就改它，
 否则改 `~/.bb-sync/config.yaml`；用 `--config <路径>` 可以显式指定别的文件。
+
+修改或删除 `root`（默认下载目录）时，默认还会同步更新
+`~/.bb-sync/config.yaml`，这样从其它目录运行 `bb-sync` 时也会使用新的默认目录。
+若 `root` 是相对路径，会在同步前按当前配置文件的目录解析成绝对路径，避免换目录后
+指向错误位置；只改当前生效文件可加 `--no-sync-home`。
 
 加 `--json` 可让输出机器可读，例如 `bb-sync --json config get root`。
 
@@ -74,7 +80,8 @@ root: ~/courses
 - 支持 `~`（用户主目录）和相对路径；相对路径以 **配置文件所在目录** 为基准
 - 每门课会在 `root` 下建一个课程文件夹（命名规则见 `course_dirs`）
 - **命令行 `--root` 参数优先于这里的值**：`bb-sync run --root D:/courses`（仅本次有效）；
-  要永久修改默认目录用 `bb-sync config set root D:/courses`
+  要永久修改默认目录用 `bb-sync config set root D:/courses`。当前目录有项目配置时，
+  它会同时同步到用户级配置，避免换目录后失效；只想改当前文件用 `--no-sync-home`
 
 ## include — 同步范围
 
