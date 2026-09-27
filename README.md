@@ -14,6 +14,8 @@
   ```
 
 - [Git](https://git-scm.com/downloads) — 安装命令会以 `git+https://` 形式从 GitHub 拉取本项目，因此系统里必须有 git；Windows 可用 `winget install --id Git.Git -e` 或直接运行官网安装包
+- [Node.js](https://nodejs.org/) **22+**（自带 npm）— 浏览器后端是 Node 服务，首次运行会自动用 npm 安装依赖；`winget install OpenJS.NodeJS.LTS` 或官网安装包
+- [Google Chrome](https://www.google.com/chrome/) — 登录 Blackboard 用的浏览器内核；需安装在默认位置（Program Files），自定义位置请设置环境变量 `CHROME_EXECUTABLE_PATH` 指向 chrome.exe
 
 装完后**重开一个终端**（让 PATH 生效）
 
@@ -22,6 +24,7 @@
 ```powershell
 uv --version    # 输出 uv 版本号
 git --version   # 输出 git 版本号
+node --version  # 输出 node 版本号
 ```
 
 两条命令都能出版本号即可继续；如果提示"无法识别"，说明 PATH 还没生效，再重开一个终端试试。
@@ -69,6 +72,7 @@ bb-sync --version
 
 - **想更换或修改密码** → 再跑一次 `bb-sync --login` 覆盖即可。
 - **运行异常** → 删掉 `~/.bb-sync/` 目录后重新 `bb-sync --login` 配置即可重置。
+- **首次运行卡在下载 Steel** → 需要 github.com 可访问，代理用户请确认系统代理已开启。
 
 ## License
 
