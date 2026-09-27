@@ -2,6 +2,13 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 改进
+
+- `bb-sync run` 在汇总后逐行打印待办明细（日期、课程、任务名）；没有待办时打印
+  `Congratulations!`，`--json` 模式下这些诊断仍只写入 stderr。
+
 ## [1.3.0] — 2026-09-28
 
 ### 改进

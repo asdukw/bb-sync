@@ -256,6 +256,8 @@ def run_sync(options: SyncOptions) -> SyncStats:
         steel.release_session(session, console)
 
     _print_summary(console, stats, options.dry_run)
+    if due_failed < len(courses):
+        _print_due_details(console, due_items, due_failed)
     return stats
 
 
@@ -268,6 +270,19 @@ def _print_summary(console: Console, stats: SyncStats, dry_run: bool) -> None:
         console.log(f"新下载 {stats.downloaded} 个，已存在跳过 {stats.exists} 个")
     if stats.failed:
         console.warn(f"失败 {stats.failed} 个")
+
+
+def _print_due_details(console: Console, items: list[DueItem], failed: int = 0) -> None:
+    """在 ``run`` 最后逐行打印待办明细（stderr）。"""
+    if not items:
+        if failed:
+            console.log("[due] 没有可显示的待办明细（部分课程抓取失败）")
+        else:
+            console.log("[due] Congratulations! 没有待办。")
+        return
+    for item in items:
+        due_date = item.due_date.isoformat() if item.due_date else "日期未知"
+        console.log(f"[due] {due_date} | {item.course_label} | {item.title}")
 
 
 def list_courses(options: SyncOptions) -> list[Course]:

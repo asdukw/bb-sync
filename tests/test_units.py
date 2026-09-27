@@ -830,6 +830,57 @@ def test_run_sync_integrates_due_markdown(monkeypatch, tmp_path: Path, dry_run: 
         assert "## Congratulations! 🎉" in due_file.read_text(encoding="utf-8")
 
 
+def test_print_due_details_one_item_per_line() -> None:
+    from datetime import date
+    from typing import cast
+
+    from bb_sync.blackboard.models import DueItem
+    from bb_sync.core import service
+    from bb_sync.core.output import Console
+
+    class FakeConsole:
+        def __init__(self) -> None:
+            self.messages: list[str] = []
+
+        def log(self, message: str) -> None:
+            self.messages.append(message)
+
+    fake = FakeConsole()
+    console = cast(Console, fake)
+    service._print_due_details(
+        console,
+        [
+            DueItem("_1_1", "CSC5010", "AI", "Homework 1", date(2026, 10, 10)),
+            DueItem("_2_1", "MDS5122", "DL", "Reading", None),
+        ],
+    )
+
+    assert fake.messages == [
+        "[due] 2026-10-10 | CSC5010 | Homework 1",
+        "[due] 日期未知 | MDS5122 | Reading",
+    ]
+
+
+def test_print_due_details_empty_writes_congratulations() -> None:
+    from typing import cast
+
+    from bb_sync.core import service
+    from bb_sync.core.output import Console
+
+    class FakeConsole:
+        def __init__(self) -> None:
+            self.messages: list[str] = []
+
+        def log(self, message: str) -> None:
+            self.messages.append(message)
+
+    fake = FakeConsole()
+    console = cast(Console, fake)
+    service._print_due_details(console, [])
+
+    assert fake.messages == ["[due] Congratulations! 没有待办。"]
+
+
 # ---------------------------------------------------------------- 下载推断
 
 
