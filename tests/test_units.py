@@ -719,17 +719,23 @@ def test_scrape_announcements_keeps_distinct_titles_and_bodies(tmp_path: Path) -
             assert selector == "#announcementList > li"
             assert "h3.item" in script
             assert ".vtbegenerated" in script
+            assert "body_markdown" in script
+            assert "toMarkdown" in script
             return [
                 {
                     "title": "DDA5002 Tutorial 1 Recording",
                     "posted_on": "Posted on: Tuesday, September 15, 2026",
-                    "body": "The recording is now available.\\n\\nPasscode: 6$c$NfbL",
+                    "body_markdown": (
+                        "The recording is now available.\\n\\n"
+                        "[Recording](https://example.com/recording)\\n\\n"
+                        "![公告图片](https://example.com/qr.png)"
+                    ),
                     "posted_by": "Posted by: Zhiqi\\nPosted to: DDA5002",
                 },
                 {
                     "title": "Assignment 1 Released",
                     "posted_on": "Posted on: Monday, September 14, 2026",
-                    "body": "Homework assignment 1 is now available.",
+                    "body_markdown": "Homework assignment 1 is now available.",
                     "posted_by": "Posted by: Junchi\\nPosted to: DDA5002",
                 },
             ]
@@ -750,6 +756,8 @@ def test_scrape_announcements_keeps_distinct_titles_and_bodies(tmp_path: Path) -
     assert "## Assignment 1 Released" in markdown
     assert "The recording is now available." in markdown
     assert "Homework assignment 1 is now available." in markdown
+    assert "[Recording](https://example.com/recording)" in markdown
+    assert "![公告图片](https://example.com/qr.png)" in markdown
     assert markdown.count("Posted by:") == 2
     assert "(无标题)" not in markdown
 

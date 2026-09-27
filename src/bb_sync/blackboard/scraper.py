@@ -316,7 +316,7 @@ def build_announcements_markdown(course_title: str, entries: list[dict[str, str]
     for entry in entries:
         title = _clean_announcement_text(entry.get("title", "")).replace("\n", " ") or "(无标题)"
         posted_on = _clean_announcement_text(entry.get("posted_on", "")).replace("\n", " ")
-        body = _clean_announcement_text(entry.get("body", ""))
+        body = _clean_announcement_text(entry.get("body_markdown") or entry.get("body", ""))
         posted_by = _clean_announcement_text(entry.get("posted_by", ""))
 
         lines.extend([f"## {title}", ""])
@@ -344,18 +344,65 @@ def scrape_announcements(
         # 经典版公告页的 li 本身没有 announcement class；唯一可靠的容器是列表本身。
         entries: list[dict[str, str]] = page.eval_on_selector_all(
             "#announcementList > li",
-            """els => els.map(li => {
-                const details = li.querySelector('.details');
-                const body = details?.querySelector('.vtbegenerated');
-                const info = li.querySelector('.announcementInfo');
-                return {
-                    title: (li.querySelector('h3.item, h3')?.innerText || '').trim(),
-                    posted_on: (details?.querySelector('p')?.innerText || '').trim(),
-                    body: (body?.innerText || '').trim(),
-                    posted_by: Array.from(info?.querySelectorAll('p') || [])
-                        .map(p => (p.innerText || '').trim()).filter(Boolean).join('\\n'),
+            """els => {
+                const toMarkdown = root => {
+                    const render = node => {
+                        if (!node) return '';
+                        if (node.nodeType === Node.TEXT_NODE) return node.nodeValue || '';
+                        if (node.nodeType !== Node.ELEMENT_NODE) return '';
+                        const tag = node.tagName.toLowerCase();
+                        const content = Array.from(node.childNodes).map(render).join('');
+                        if (tag === 'br') return '\\n';
+                        if (tag === 'p') return content.trim() + '\\n\\n';
+                        if (tag === 'a') {
+                            const label = content.trim();
+                            return node.href
+                                ? '[' + (label || node.href) + '](' + node.href + ')'
+                                : label;
+                        }
+                        if (tag === 'img') {
+                            const alt = (node.getAttribute('alt') || '公告图片').trim();
+                            return node.src ? '![' + alt + '](' + node.src + ')' : '';
+                        }
+                        if (tag === 'strong' || tag === 'b') return '**' + content.trim() + '**';
+                        if (tag === 'em' || tag === 'i') return '*' + content.trim() + '*';
+                        if (tag === 'code') return '`' + content.trim() + '`';
+                        if (tag === 'ul' || tag === 'ol') {
+                            const ordered = tag === 'ol';
+                            const start = Number.parseInt(node.getAttribute('start') || '1', 10) || 1;
+                            let index = 0;
+                            return Array.from(node.children)
+                                .filter(child => child.tagName && child.tagName.toLowerCase() === 'li')
+                                .map(li => {
+                                    const prefix = ordered ? (start + index++) + '. ' : '- ';
+                                    const item = render(li).trim().replace(
+                                        /\\n/g, '\\n' + ' '.repeat(prefix.length)
+                                    );
+                                    return prefix + item + '\\n';
+                                }).join('') + '\\n';
+                        }
+                        if (tag === 'li') return content.trim() + '\\n';
+                        if (tag === 'hr') return '\\n---\\n\\n';
+                        return content;
+                    };
+                    return render(root)
+                        .replace(/[ \\t]+\\n/g, '\\n')
+                        .replace(/\\n{3,}/g, '\\n\\n')
+                        .trim();
                 };
-            })""",
+                return els.map(li => {
+                    const details = li.querySelector('.details');
+                    const body = details?.querySelector('.vtbegenerated');
+                    const info = li.querySelector('.announcementInfo');
+                    return {
+                        title: (li.querySelector('h3.item, h3')?.innerText || '').trim(),
+                        posted_on: (details?.querySelector('p')?.innerText || '').trim(),
+                        body_markdown: body ? toMarkdown(body) : '',
+                        posted_by: Array.from(info?.querySelectorAll('p') || [])
+                            .map(p => (p.innerText || '').trim()).filter(Boolean).join('\\n'),
+                    };
+                });
+            }""",
         )
         count = len(entries)
         if count and not dry_run:
