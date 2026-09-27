@@ -96,7 +96,7 @@ bb-sync run --headed
 
 第一次执行 `run` 时，bb-sync 会自动：
 
-- 从 GitHub 下载 Steel 源码；
+- 从 GitHub 下载 Steel 源码（固定在我们验证过的快照，不跟随上游 `main` 漂移）；
 - 使用 npm 安装 Steel 依赖；
 - 把 Steel 后端固定装在家目录的 `~/.steel`（不随 `BB_SYNC_HOME` 变化，升级后不会多出第二份）；
 - 把安装和启动日志写在 `~/.steel/steel.log`。

@@ -402,6 +402,38 @@ def test_steel_root_honors_env_override(monkeypatch, tmp_path: Path) -> None:
     assert steel._resolve_steel_root() == custom
 
 
+def test_steel_zip_url_is_pinned_to_commit() -> None:
+    """源码包锚定到具体 commit，不跟随 main / tag 漂移。"""
+    from bb_sync.browser import steel
+
+    assert len(steel.STEEL_REF) == 40
+    assert all(c in "0123456789abcdef" for c in steel.STEEL_REF)
+    url = steel._default_zip_url()
+    assert steel.STEEL_REF in url
+    assert "refs/heads" not in url
+
+
+def test_steel_extracted_root_allows_any_ref_name(tmp_path: Path) -> None:
+    """zip 根目录名随 ref 变化（分支/tag/commit），按目录探测而不是硬编码。"""
+    from bb_sync.browser import steel
+
+    tmp_dir = tmp_path / "tmp"
+    extracted = tmp_dir / "steel-browser-dacea7e217ccded0d3886b8771a0ae52d254552c"
+    extracted.mkdir(parents=True)
+    (tmp_dir / "steel-browser.zip").write_text("zip", encoding="utf-8")  # 压缩包本身不算目录
+
+    assert steel._extracted_root(tmp_dir) == extracted
+
+    (tmp_dir / "steel-browser-main").mkdir()
+    with pytest.raises(EnvironmentError_, match="结构异常"):
+        steel._extracted_root(tmp_dir)
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with pytest.raises(EnvironmentError_, match="结构异常"):
+        steel._extracted_root(empty)
+
+
 def test_steel_deploy_migrates_legacy_install(monkeypatch, tmp_path: Path) -> None:
     from bb_sync import paths
     from bb_sync.browser import steel
@@ -417,8 +449,10 @@ def test_steel_deploy_migrates_legacy_install(monkeypatch, tmp_path: Path) -> No
     assert not legacy.exists()
     assert (new_root / "marker.txt").read_text(encoding="utf-8") == "legacy"
     assert steel.is_deployed()
-    # 迁移过来的旧安装补记归属标记，将来能识别是否由 bb-sync 安装
+    # 迁移过来的旧安装补记归属标记，将来能识别是否由 bb-sync 安装；
+    # 但具体修订未知，不谎报锚点
     assert steel._read_steel_meta()["zip_url"] == steel.STEEL_ZIP_URL
+    assert steel.installed_ref() is None
 
 
 def test_steel_deploy_reuses_complete_install(monkeypatch, tmp_path: Path) -> None:
@@ -452,6 +486,7 @@ def test_steel_deploy_keeps_foreign_install_unmanaged(monkeypatch, tmp_path: Pat
 
     assert (root / "marker.txt").read_text(encoding="utf-8") == "mine"
     assert not steel._steel_meta_path().exists()
+    assert steel.installed_ref() is None
 
 
 def test_steel_deploy_upgrades_outdated_managed_install(monkeypatch, tmp_path: Path) -> None:
@@ -474,6 +509,7 @@ def test_steel_deploy_upgrades_outdated_managed_install(monkeypatch, tmp_path: P
     assert calls == {"download": 1, "npm": 1}
     assert (root / "marker.txt").read_text(encoding="utf-8") == "fresh"
     assert steel._read_steel_meta()["zip_url"] == steel.STEEL_ZIP_URL
+    assert steel.installed_ref() == steel.STEEL_REF
     assert not list(root.parent.glob(".steel.old-*"))
 
     _forbid_node(monkeypatch)
@@ -498,6 +534,7 @@ def test_steel_deploy_backs_up_broken_install(monkeypatch, tmp_path: Path) -> No
     assert (backups[0] / "leftover.txt").read_text(encoding="utf-8") == "half-downloaded"
     assert calls == {"download": 1, "npm": 1}
     assert (root / "marker.txt").read_text(encoding="utf-8") == "fresh"
+    assert steel.installed_ref() == steel.STEEL_REF
     assert steel.is_deployed()
 
 

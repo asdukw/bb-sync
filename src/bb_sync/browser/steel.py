@@ -39,8 +39,19 @@ STEEL_DIR = STEEL_ROOT / "api"
 STEEL_LOG = STEEL_ROOT / "steel.log"
 STEEL_URL = os.environ.get("STEEL_URL", "http://127.0.0.1:3000")
 PROFILE_DIR = paths.BB_SYNC_HOME / ".browser-profile" / "steel-chrome"
-# GitHub 源码包（免 git 依赖，无需 clone）
-STEEL_ZIP_URL = "https://codeload.github.com/steel-dev/steel-browser/zip/refs/heads/main"
+# Steel 源码锚定到我们验证过的快照，不跟随上游 main 漂移（升级时只改 STEEL_REF）。
+# 当前锚点 dacea7e2 = v0.5.4-beta 之后的 4 个修复：
+#   #356 /context 轮询拖慢浏览器、#361 proxy 计数、#362 存储提取越界、#366 移动端仿真信号；
+# 上游 package.json 仍标 0.5.3，本机长期同步验证可用。
+STEEL_REF = "dacea7e217ccded0d3886b8771a0ae52d254552c"
+
+
+def _default_zip_url() -> str:
+    """默认源码包地址：固定到 STEEL_REF（zip 免 git 依赖，无需 clone）。"""
+    return f"https://codeload.github.com/steel-dev/steel-browser/zip/{STEEL_REF}"
+
+
+STEEL_ZIP_URL = os.environ.get("STEEL_ZIP_URL") or _default_zip_url()
 
 IS_WIN = sys.platform.startswith("win")
 
@@ -152,10 +163,12 @@ def _read_steel_meta() -> dict[str, object]:
     return data if isinstance(data, dict) else {}
 
 
-def _write_steel_meta(console: Console) -> None:
+def _write_steel_meta(console: Console, *, steel_ref: str | None = STEEL_REF) -> None:
+    """写安装元数据；``steel_ref=None`` 表示沿用旧安装、具体修订未知。"""
     payload = {
         "tool": "bb-sync",
         "schema": 1,
+        "steel_ref": steel_ref,
         "zip_url": STEEL_ZIP_URL,
         "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
     }
@@ -171,6 +184,12 @@ def _needs_upgrade() -> bool:
     """bb-sync 装的旧版本（记录的源码地址与当前不一致）需要更新。"""
     meta = _read_steel_meta()
     return meta.get("tool") == "bb-sync" and meta.get("zip_url") != STEEL_ZIP_URL
+
+
+def installed_ref() -> str | None:
+    """已安装源码的锚点（1.0.2 起写入元数据；用户自带或无元数据的安装返回 None）。"""
+    ref = _read_steel_meta().get("steel_ref")
+    return ref if isinstance(ref, str) and ref else None
 
 
 def _unique_backup_path(kind: str) -> Path:
@@ -197,6 +216,17 @@ def _quarantine_broken_root(console: Console) -> None:
     console.warn(f"[steel] 检测到不可用的旧目录，已备份为: {backup}")
 
 
+def _extracted_root(tmp_dir: Path) -> Path:
+    """解压后的唯一顶层目录（zip 根目录名随 ref 变化：分支 / tag / commit）。"""
+    roots = [p for p in tmp_dir.iterdir() if p.is_dir()]
+    if len(roots) != 1:
+        raise EnvironmentError_(
+            "Steel 源码包结构异常（解压结果不是单一目录）",
+            "可能是上游仓库结构变更或下载不完整，请重试；持续出现请反馈该问题",
+        )
+    return roots[0]
+
+
 def _download_source(console: Console, tmp_dir: Path) -> Path:
     """下载源码 zip 并解压到 tmp_dir，返回解压出的项目根目录。"""
     import zipfile
@@ -220,13 +250,7 @@ def _download_source(console: Console, tmp_dir: Path) -> Path:
 
     with zipfile.ZipFile(zip_path) as zf:
         zf.extractall(tmp_dir)
-    source = tmp_dir / "steel-browser-main"
-    if not source.is_dir():
-        raise EnvironmentError_(
-            "Steel 源码包结构异常（未找到 steel-browser-main 目录）",
-            "可能是上游仓库结构变更，请反馈该问题后重试",
-        )
-    return source
+    return _extracted_root(tmp_dir)
 
 
 def _install_source_tree(source: Path) -> Path | None:
@@ -318,7 +342,8 @@ def deploy(console: Console = _SILENT) -> None:
         if not _needs_upgrade():
             console.log(f"[steel] 复用已就绪的后端: {STEEL_ROOT}")
             if migrated and not _read_steel_meta():
-                _write_steel_meta(console)  # 旧版安装补记归属，便于日后升级
+                # 旧版安装补记归属（它来自我们自己的目录，但具体修订未知）
+                _write_steel_meta(console, steel_ref=None)
             _cleanup_legacy_root(console)
             return
         console.log(f"[steel] 检测到 bb-sync 安装的旧版本，准备更新: {STEEL_ROOT}")

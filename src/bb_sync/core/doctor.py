@@ -143,7 +143,10 @@ def check_steel() -> CheckResult:
     if steel.healthy():
         return CheckResult(True, "Steel 后端", "服务端运行中", required=False)
     if steel.is_deployed():
-        return CheckResult(True, "Steel 后端", "已部署（未运行，同步时自动启动）", required=False)
+        ref = steel.installed_ref()
+        label = f"{ref[:7]}…" if ref and len(ref) > 12 else ref
+        detail = f"已部署（{label}，未运行）" if label else "已部署（未运行，同步时自动启动）"
+        return CheckResult(True, "Steel 后端", detail, required=False)
     return CheckResult(
         False,
         "Steel 后端",
