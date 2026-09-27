@@ -42,19 +42,24 @@ uv tool upgrade bb-sync
 ## 日常使用
 
 ```powershell
-bb-sync                     # 增量同步全部课程
-bb-sync --course CSC5010    # 只同步一门课
-bb-sync --root D:/courses   # 指定下载目录（默认 ~/courses）
-bb-sync --dry-run           # 预览会下载什么，不实际下载
-bb-sync --doctor            # 体检：检查前置条件（git/Node/浏览器/网络等）
+bb-sync run                         # 增量同步全部课程
+bb-sync run --course CSC5010        # 只同步一门课
+bb-sync run --dry-run               # 预览会下载什么，不实际下载
+bb-sync config set root D:/courses  # 修改默认下载目录（永久生效）
+bb-sync doctor                      # 体检：检查前置条件（git/Node/浏览器/网络等）
 bb-sync --version
 ```
+
+> 提示：直接运行 `bb-sync`（无参数）只显示帮助，不会同步；旧版把 `--headed`、`--dry-run`
+> 等参数直接挂在 `bb-sync` 后的用法已迁移到 `bb-sync run` 子命令下。
 
 首次运行会提示输入学号和密码（存入系统凭据管理器，不落明文）；之后运行直接复用登录态。
 
 ## 文件下载到哪里
 
 - 课程文件默认下载到 **用户主目录下的 `courses/`**（如 `C:\Users\<你>\courses`）
+- 改默认下载目录：`bb-sync config set root <目录>`（写入 config.yaml，永久生效）；
+  或每次运行时用 `bb-sync run --root <目录>` 临时指定（优先级更高）
 - 按标题关键词自动归入课程文件夹的子目录：
 
 | 标题匹配关键词                    | 目标目录         |
@@ -71,9 +76,10 @@ bb-sync --version
 
 ## 常见问题
 
-- **想更换或修改密码** → 再跑一次 `bb-sync --login` 覆盖即可。
-- **不确定环境缺什么** → `bb-sync --doctor` 逐项体检，缺什么、怎么装都会告诉你。
-- **运行异常** → 删掉 `~/.bb-sync/` 目录后重新 `bb-sync --login` 配置即可重置。
+- **想更换或修改密码** → 再跑一次 `bb-sync login` 覆盖即可。
+- **不确定环境缺什么** → `bb-sync doctor` 逐项体检，缺什么、怎么装都会告诉你。
+- **运行异常** → 删掉 `~/.bb-sync/` 目录后重新 `bb-sync login` 配置即可重置。
+- **记不住命令** → 直接运行 `bb-sync` 查看帮助；配置读写见 [docs/config.md](docs/config.md)。
 - **首次运行卡在下载 Steel** → 需要 github.com 可访问，代理用户请确认系统代理已开启。
 
 ## License

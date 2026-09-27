@@ -5,10 +5,29 @@
 ## 配置文件在哪
 
 - **位置**：`~/.bb-sync/config.yaml`（Windows 即 `C:\Users\<你>\.bb-sync\config.yaml`）
-- **自动生成**：首次运行 `bb-sync` 时如果找不到配置，会自动生成一份默认配置到上述位置
+- **自动生成**：首次执行同步（`bb-sync run`）或修改配置时，如果找不到配置，
+  会自动生成一份默认配置到上述位置
 - **优先级**：当前工作目录下的 `config.yaml` 优先于 `~/.bb-sync/` 里的（方便项目内覆盖）；
   `--config <路径>` 可以指定任意配置文件
 - **环境变量**：整个运行时目录（配置、浏览器数据等）可用 `BB_SYNC_HOME` 重定向
+
+## 用命令行改配置（bb-sync config）
+
+不想手动编辑 YAML 时，可以用 `config` 子命令直接读写配置文件（编辑会保留原有注释）：
+
+```powershell
+bb-sync config path                # 显示实际生效的配置文件路径
+bb-sync config show                # 显示整份配置
+bb-sync config get root            # 读取某一项
+bb-sync config set root D:/courses # 修改默认下载目录（永久生效）
+bb-sync config set include "[CSC5010, DDA5002]"   # 值含空格/列表时记得加引号
+bb-sync config set course_dirs.CSC5010 CSC5010_AI # 点号写法修改嵌套键
+bb-sync config unset root          # 删除某项（恢复内置默认值）
+bb-sync config edit                # 用系统编辑器打开配置文件
+```
+
+`config` 操作的是「实际生效」的那份配置：当前目录有 `config.yaml` 就改它，
+否则改 `~/.bb-sync/config.yaml`；用 `--config <路径>` 可以显式指定别的文件。
 
 ## 配置项一览
 
@@ -29,7 +48,8 @@ root: ~/courses
 
 - 支持 `~`（用户主目录）和相对路径；相对路径以 **配置文件所在目录** 为基准
 - 每门课会在 `root` 下建一个课程文件夹（命名规则见 `course_dirs`）
-- **命令行 `--root` 参数优先于这里的值**：`bb-sync --root D:/courses`
+- **命令行 `--root` 参数优先于这里的值**：`bb-sync run --root D:/courses`（仅本次有效）；
+  要永久修改默认目录用 `bb-sync config set root D:/courses`
 
 ## include — 同步范围
 
@@ -41,7 +61,7 @@ include: [CSC5010, DDA5002] # 只同步列表里的课程代码
 
 - `all`：同步 Blackboard 上的所有课程
 - 列表：按课程代码过滤（课程代码即标题里的 `CSC5010` 这类编号），写错的代码会被忽略
-- 命令行 `--course CSC5010`（可重复多次）优先于这里的值
+- 命令行 `bb-sync run --course CSC5010`（可重复多次）优先于这里的值
 
 ## course_dirs — 课程文件夹命名
 

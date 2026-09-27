@@ -5,11 +5,15 @@ bb-sync — Blackboard 课程资源自动同步
 到本地课程文件夹（lectures / assignments / tutorials）。
 
 用法：
-    bb-sync                     # 增量同步（无头模式，复用已保存的登录态）
-    bb-sync --headed            # 有头模式（首次登录 / 需要人工过 MFA 时用）
-    bb-sync --dry-run           # 只列出将要下载的文件，不实际下载
-    bb-sync --course CSC5010    # 只同步指定课程
-    bb-sync --root D:/courses   # 指定课程文件下载目录（默认 ~/courses）
+    bb-sync                     # 只显示帮助（不再隐式同步）
+    bb-sync run                 # 执行一次同步（无头模式，复用已保存的登录态）
+    bb-sync run --headed        # 有头模式（首次登录 / 需要人工过 MFA 时用）
+    bb-sync run --dry-run       # 只列出将要下载的文件，不实际下载
+    bb-sync run --course CSC5010    # 只同步指定课程
+    bb-sync run --root D:/courses   # 本次同步临时指定下载目录
+    bb-sync config set root D:/courses  # 修改默认下载目录（写入配置，永久生效）
+    bb-sync config get root     # 读取某项配置
+    bb-sync config show / path  # 显示整份配置 / 配置文件位置
 """
 
 from __future__ import annotations
@@ -98,6 +102,7 @@ def load_config(config_path: Path) -> dict:
 # 首次运行自动生成的默认配置（与内置默认值一致，用户可按需修改）
 DEFAULT_CONFIG = """\
 # bb-sync 配置（首次运行自动生成，可按需修改）
+# 也可用命令修改：bb-sync config set root <目录>
 
 # 课程资源根目录（支持 ~ 和相对路径）
 root: ~/courses
@@ -716,42 +721,310 @@ def cmd_doctor() -> int:
     return 1 if required_fail else 0
 
 
+# ------------------------------------------------------------- config 子命令
+
+
+def _config_target(explicit: str | None) -> Path:
+    """config 命令操作的目标文件：--config 显式指定 > 当前目录 config.yaml > ~/.bb-sync/。"""
+    if explicit:
+        return Path(explicit).expanduser()
+    cwd_candidate = Path.cwd() / "config.yaml"
+    if cwd_candidate.exists():
+        return cwd_candidate
+    return BB_SYNC_HOME / "config.yaml"
+
+
+def _ensure_config_file(path: Path) -> None:
+    """目标文件不存在时先落一份默认配置（与首次运行行为一致）。"""
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(DEFAULT_CONFIG, encoding="utf-8")
+        log(f"[info] 已生成默认配置 {path}")
+
+
+def _split_inline(line: str) -> str:
+    """键行冒号后的值部分（去注释、去空白）；无冒号返回空串。"""
+    return line.split(":", 1)[1].split("#", 1)[0].strip() if ":" in line else ""
+
+
+def _block_end(lines: list[str], start: int) -> int:
+    """顶层键所在映射块的结束行号（不含）：空行/注释/缩进行属于块内。"""
+    j = start + 1
+    while j < len(lines):
+        stripped = lines[j].strip()
+        if not stripped or stripped.startswith("#") or lines[j][0] in " \t":
+            j += 1
+            continue
+        break
+    return j
+
+
+def _find_block(lines: list[str], parent: str) -> tuple[int, int] | None:
+    pat = re.compile(rf"^{re.escape(parent)}\s*:")
+    for i, line in enumerate(lines):
+        if pat.match(line):
+            return i, _block_end(lines, i)
+    return None
+
+
+def _child_indent(lines: list[str], start: int, end: int) -> str:
+    """取块内已有子键的缩进；没有则默认两个空格。"""
+    for k in range(start + 1, end):
+        s = lines[k]
+        if s.strip() and not s.strip().startswith("#") and s[0] in " \t":
+            return s[: len(s) - len(s.lstrip())]
+    return "  "
+
+
+def _set_top_level(lines: list[str], key: str, raw: str) -> None:
+    """替换顶层标量键的值（独占整行的注释不受影响）；键不存在则追加。"""
+    pat = re.compile(rf"^(\s*){re.escape(key)}(\s*:\s*).*$")
+    for i, line in enumerate(lines):
+        m = pat.match(line)
+        if m:
+            lines[i] = f"{m.group(1)}{key}: {raw}"
+            return
+    if lines and lines[-1].strip():
+        lines.append("")
+    lines.append(f"{key}: {raw}")
+
+
+def _set_nested(lines: list[str], parent: str, child: str, raw: str) -> None:
+    """在 parent 映射下写入/更新 child 子键，保留原有注释与缩进。"""
+    blk = _find_block(lines, parent)
+    if blk is None:  # 整个键不存在：追加到文件末尾
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.append(f"{parent}:")
+        lines.append(f"  {child}: {raw}")
+        return
+    start, end = blk
+    inline = _split_inline(lines[start])
+    if inline:
+        if inline[0] in "{[":  # 流式空映射（如 course_dirs: {}）→ 展开为块式
+            lines[start] = lines[start].split(":", 1)[0] + ":"
+            lines.insert(start + 1, f"  {child}: {raw}")
+            return
+        raise SystemExit(f"{parent} 的值不是映射，无法设置子键 {child}")
+    pat = re.compile(rf"^(\s+){re.escape(child)}(\s*:\s*).*$")
+    for k in range(start + 1, end):
+        m = pat.match(lines[k])
+        if m:
+            lines[k] = f"{m.group(1)}{child}: {raw}"
+            return
+    indent = _child_indent(lines, start, end)
+    last_content = start
+    for k in range(start + 1, end):
+        s = lines[k].strip()
+        if s and not s.startswith("#"):
+            last_content = k
+    lines.insert(last_content + 1, f"{indent}{child}: {raw}")
+
+
+def _unset_top_level(lines: list[str], key: str) -> None:
+    """删除顶层键：标量整行删除；映射（含流式 {}）重置为 {}。"""
+    blk = _find_block(lines, key)
+    if blk is None:
+        raise SystemExit(f"配置里没有：{key}")
+    start, end = blk
+    inline = _split_inline(lines[start])
+    has_children = any(
+        lines[k].strip() and not lines[k].strip().startswith("#") and lines[k][0] in " \t"
+        for k in range(start + 1, end)
+    )
+    if (inline and inline[0] in "{[") or (not inline and has_children):
+        lines[start] = lines[start].split(":", 1)[0] + ": {}"
+        if not inline:  # 只删内容行，保留归属下个键的注释
+            for k in range(end - 1, start, -1):
+                s = lines[k].strip()
+                if s and not s.startswith("#"):
+                    del lines[k]
+        return
+    del lines[start]
+
+
+def _unset_nested(lines: list[str], parent: str, child: str) -> None:
+    blk = _find_block(lines, parent)
+    if blk is None or _split_inline(lines[blk[0]]):
+        raise SystemExit(f"配置里没有：{parent}.{child}")
+    start, end = blk
+    for k in range(start + 1, end):
+        if re.match(rf"^\s+{re.escape(child)}\s*:", lines[k]):
+            del lines[k]
+            return
+    raise SystemExit(f"配置里没有：{parent}.{child}")
+
+
+def cmd_config(args: argparse.Namespace) -> int:
+    """bb-sync config：查看/修改配置文件（默认路径等），编辑保留原有注释。"""
+    path = _config_target(getattr(args, "config_file", None))
+    action = args.action
+
+    if action == "path":
+        print(path)
+        return 0
+    if action == "show":
+        print(path.read_text(encoding="utf-8") if path.exists() else f"(配置文件不存在：{path})")
+        return 0
+    if action == "edit":
+        _ensure_config_file(path)
+        if sys.platform == "win32":
+            os.startfile(path)  # type: ignore[attr-defined]
+        else:
+            subprocess.call([os.environ.get("EDITOR", "vi"), str(path)])
+        return 0
+
+    if action == "get":
+        if not args.key:
+            raise SystemExit("用法：bb-sync config get <键>（如 root、course_dirs.CSC5010）")
+        if not path.exists():
+            raise SystemExit(f"配置文件不存在：{path}")
+        node: object = load_config(path) or {}
+        for part in args.key.split("."):
+            if isinstance(node, dict) and part in node:
+                node = node[part]
+            else:
+                raise SystemExit(f"配置里没有：{args.key}")
+        if isinstance(node, (dict, list)):
+            print(
+                yaml.safe_dump(node, allow_unicode=True, default_flow_style=False, sort_keys=False).rstrip()
+            )
+        else:
+            print(node)
+        return 0
+
+    if action == "set":
+        if not args.key or args.value is None:
+            raise SystemExit(
+                "用法：bb-sync config set <键> <值>（如 bb-sync config set root ~/workspace）"
+            )
+        try:
+            parsed = yaml.safe_load(args.value)
+        except yaml.YAMLError as exc:
+            raise SystemExit(f"值不是合法的 YAML：{args.value}（{exc}）") from exc
+        if isinstance(parsed, dict):
+            raise SystemExit(
+                "set 不支持映射值；嵌套键请用点号写法，如：bb-sync config set course_dirs.CSC5010 CSC5010_AI"
+            )
+        _ensure_config_file(path)
+        lines = path.read_text(encoding="utf-8").splitlines()
+        if "." in args.key:
+            parent, child = args.key.split(".", 1)
+            _set_nested(lines, parent, child, args.value)
+        else:
+            _set_top_level(lines, args.key, args.value)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        print(f"已写入 {path}")
+        print(f"  {args.key} = {args.value}")
+        return 0
+
+    # unset
+    if not args.key:
+        raise SystemExit("用法：bb-sync config unset <键>（如 root、course_dirs.CSC5010）")
+    if not path.exists():
+        raise SystemExit(f"配置文件不存在：{path}")
+    lines = path.read_text(encoding="utf-8").splitlines()
+    if "." in args.key:
+        parent, child = args.key.split(".", 1)
+        _unset_nested(lines, parent, child)
+    else:
+        _unset_top_level(lines, args.key)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"已从 {path} 移除：{args.key}")
+    return 0
+
+
 # ---------------------------------------------------------------- main
 
 
-def main() -> int:
+def _build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
-        prog="bb-sync", description="Blackboard 课程资源自动同步（ADFS SSO + Steel）"
-    )
-    ap.add_argument("--headed", action="store_true", help="有头模式（首次登录/MFA 用）")
-    ap.add_argument("--dry-run", action="store_true", help="只列出文件，不下载")
-    ap.add_argument("--course", action="append", help="只同步指定课程代码（可多次）")
-    ap.add_argument(
-        "--root",
-        help="课程文件下载目录（默认 ~/courses，也可在 config.yaml 的 root 里配置；此项优先）",
-    )
-    ap.add_argument(
-        "--config",
-        help="配置文件路径（默认：当前目录 config.yaml，其次 ~/.bb-sync/config.yaml）",
-    )
-    ap.add_argument("--login", action="store_true", help="交互式录入凭据并保存到系统钥匙串后退出")
-    ap.add_argument("--logout", action="store_true", help="从系统钥匙串删除已保存的凭据")
-    ap.add_argument(
-        "--doctor", action="store_true", help="体检：检查前置条件（git/Node/浏览器/网络等）"
+        prog="bb-sync",
+        description="Blackboard 课程资源自动同步（ADFS SSO + Steel）。无参数运行只显示本帮助。",
     )
     ap.add_argument("--version", action="version", version=f"bb-sync {__version__}")
-    args = ap.parse_args()
+    # 兼容旧版：立即执行型参数保留在顶层（推荐使用同名子命令）
+    ap.add_argument(
+        "--login", action="store_true", help="交互式录入凭据并保存到系统钥匙串后退出（= bb-sync login）"
+    )
+    ap.add_argument("--logout", action="store_true", help="从系统钥匙串删除已保存的凭据（= bb-sync logout）")
+    ap.add_argument("--doctor", action="store_true", help="体检：检查前置条件（= bb-sync doctor）")
 
-    if args.login:
+    sub = ap.add_subparsers(dest="command", metavar="<命令>")
+
+    p_run = sub.add_parser(
+        "run",
+        help="执行一次课程同步",
+        description="执行一次课程同步（下载目录取配置里的 root，可用 --root 临时覆盖）。",
+    )
+    p_run.add_argument("--headed", action="store_true", help="有头模式（首次登录/MFA 用）")
+    p_run.add_argument("--dry-run", action="store_true", help="只列出文件，不下载")
+    p_run.add_argument("--course", action="append", help="只同步指定课程代码（可多次）")
+    p_run.add_argument("--root", help="本次同步的下载目录（临时覆盖配置里的 root）")
+    p_run.add_argument(
+        "--config", help="配置文件路径（默认：当前目录 config.yaml，其次 ~/.bb-sync/config.yaml）"
+    )
+
+    p_cfg = sub.add_parser(
+        "config",
+        help="查看/修改配置（如默认下载路径）",
+        description="查看或修改配置文件，编辑时保留原有注释。示例：bb-sync config set root ~/workspace",
+    )
+    p_cfg.add_argument(
+        "action",
+        choices=["path", "show", "get", "set", "unset", "edit"],
+        help="path=配置文件位置 / show=显示全部 / get=读一项 / set=写一项 / unset=删一项 / edit=用编辑器打开",
+    )
+    p_cfg.add_argument("key", nargs="?", help="配置键，支持点号子键（如 root、course_dirs.CSC5010）")
+    p_cfg.add_argument(
+        "value", nargs="?", help="set 的值（YAML 标量或列表，如 ~/workspace、[CSC5010]、true、3）"
+    )
+    p_cfg.add_argument("--config", dest="config_file", help="指定要操作的配置文件路径")
+
+    sub.add_parser("doctor", help="体检：检查前置条件（git/Node/浏览器/网络等）")
+    sub.add_parser("login", help="交互式录入凭据并保存到系统钥匙串后退出")
+    sub.add_parser("logout", help="从系统钥匙串删除已保存的凭据")
+    return ap
+
+
+def main() -> int:
+    argv = sys.argv[1:]
+    if not argv:  # 无参数 = 显示帮助（不再隐式同步）
+        _build_parser().print_help()
+        return 0
+
+    # 旧用法迁移提示：同步参数已移到 run 子命令
+    legacy = {"--headed", "--dry-run", "--course", "--root"}
+    if not any(a in {"run", "config", "doctor", "login", "logout"} for a in argv) and any(
+        a.split("=", 1)[0] in legacy for a in argv
+    ):
+        print("CLI 已改版：同步参数请通过 bb-sync run 传入，例如 bb-sync run --headed", file=sys.stderr)
+        print("修改默认下载目录（永久生效）：bb-sync config set root <目录>", file=sys.stderr)
+        return 2
+
+    args = _build_parser().parse_args(argv)
+
+    if args.command == "run":
+        return run_sync(args)
+    if args.command == "config":
+        return cmd_config(args)
+    if args.command == "login" or args.login:
         return prompt_save_credentials()
-    if args.doctor:
-        return cmd_doctor()
-    if args.logout:
+    if args.command == "logout" or args.logout:
         if delete_credentials():
             print("已从系统钥匙串删除凭据 ✓")
         else:
             print("钥匙串中没有保存的凭据")
         return 0
+    if args.command == "doctor" or args.doctor:
+        return cmd_doctor()
+    _build_parser().print_help()
+    return 0
+
+
+def run_sync(args: argparse.Namespace) -> int:
+    """执行一次同步（bb-sync run）。"""
+    config_path = Path(args.config).expanduser() if args.config else find_config_file("config.yaml")
 
     config_path = Path(args.config).expanduser() if args.config else find_config_file("config.yaml")
     if not config_path.exists():
@@ -778,7 +1051,7 @@ def main() -> int:
     root.mkdir(parents=True, exist_ok=True)
     if first_run:
         log(f"[info] 首次运行：课程文件将下载到 {root}")
-        log("       （如需修改，可用 --root 参数或 config.yaml 里的 root）")
+        log("       （永久修改默认目录：bb-sync config set root <目录>；本次临时指定：--root）")
 
     include = args.course if args.course else cfg.get("include", "all")
     if include != "all" and isinstance(include, list):
