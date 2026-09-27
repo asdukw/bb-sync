@@ -2,26 +2,15 @@
 
 import re
 
-from dotenv import dotenv_values
 from playwright.sync_api import sync_playwright
 
-from paths import BB_SYNC_HOME, find_config_file
+from creds import load_credentials
+from paths import BB_SYNC_HOME
 from steel_backend import connect, create_session, ensure_server, release_session
 
-# 注意：不能用 os.environ 读小写键名，Windows 的 USERNAME 会顶掉 .env 里的 username
-_VALS = dotenv_values(find_config_file(".env"))
-
-
-def _g(*keys: str) -> str:
-    for k in keys:
-        val = _VALS.get(k)
-        if val:
-            return val.strip()
-    return ""
-
-
-USER = _g("STUDENT_ID", "student_id", "username")
-PASS = _g("PASSWORD", "password")
+_creds = load_credentials()
+USER = _creds.student_id
+PASS = _creds.password
 
 
 def dump(page, tag: str):

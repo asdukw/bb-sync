@@ -38,9 +38,8 @@ mkdir ~/.bb-sync
 Copy-Item config.yaml ~/.bb-sync/     # 源码直跑且在项目目录内运行时可跳过（自动读当前目录）
 notepad ~/.bb-sync/config.yaml
 
-# 2. 凭据：复制模板并填入学号和密码
-Copy-Item .env.example ~/.bb-sync/.env
-notepad ~/.bb-sync/.env   # STUDENT_ID 填「学号」（ADFS 提示：学生=学号，教职工=邮箱前缀）
+# 2. 凭据：交互式录入，保存到系统钥匙串（Windows 凭据管理器 / macOS 钥匙串）
+bb-sync --login
 
 # 3. 部署 Steel 后端（仅首次，之后无需重复）
 git clone --depth 1 https://github.com/steel-dev/steel-browser "$env:USERPROFILE\.bb-sync\.steel"
@@ -51,6 +50,15 @@ cd -
 ```
 
 > `config.yaml` 与 `.env` 放**当前工作目录**优先于 `~/.bb-sync/`，方便多学校/多账号并存。
+
+### 凭据存储
+
+- **默认：系统钥匙串**（经 [keyring](https://pypi.org/project/keyring/)）：Windows 凭据管理器、
+  macOS 钥匙串、Linux Secret Service。`bb-sync --login` 录入，`bb-sync --logout` 删除，
+  明文不落盘。
+- **兜底：`~/.bb-sync/.env`**（键名 `STUDENT_ID` / `PASSWORD`），供 CI 或无桌面环境使用；
+  钥匙串的优先级高于 `.env`，两者并存时建议删除 `.env`。
+- 重新录入学号/密码：再跑一次 `bb-sync --login` 即可覆盖。
 
 ## 日常使用
 

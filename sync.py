@@ -25,10 +25,10 @@ from pathlib import Path
 from urllib.parse import unquote
 
 import yaml
-from dotenv import dotenv_values
 from playwright.sync_api import Page, sync_playwright
 from playwright.sync_api import TimeoutError as PWTimeout
 
+from creds import delete_credentials, env_file_exists, load_credentials, save_credentials
 from paths import BB_SYNC_HOME, find_config_file
 from steel_backend import connect, create_session, ensure_server, release_session
 
@@ -77,22 +77,21 @@ def load_config(config_path: Path) -> dict:
         return yaml.safe_load(f)
 
 
-def load_credentials() -> tuple[str, str]:
-    """直接从 .env 文件按原样读取凭据（STUDENT_ID / PASSWORD）。
+def prompt_save_credentials() -> int:
+    """交互式录入凭据并存入系统钥匙串（bb-sync --login）。"""
+    import getpass
 
-    不走 os.environ：Windows 环境变量名大小写不敏感，系统自带的 USERNAME=xxx
-    会顶掉 .env 里的 username；旧键名 username/password 仍兼容。
-    """
-    vals = dotenv_values(find_config_file(".env"))
-
-    def get(*keys: str) -> str:
-        for k in keys:
-            val = vals.get(k)
-            if val:
-                return val
-        return ""
-
-    return get("STUDENT_ID", "student_id", "username").strip(), get("PASSWORD", "password").strip()
+    student_id = input("学号（学生）/ 邮箱前缀（教职工）: ").strip()
+    if not student_id:
+        raise SystemExit("学号不能为空")
+    password = getpass.getpass("密码: ")
+    if not password:
+        raise SystemExit("密码不能为空")
+    backend = save_credentials(student_id, password)
+    print(f"凭据已存入系统钥匙串（{backend}），明文不再落盘 ✓")
+    if env_file_exists():
+        print("[提示] 检测到 .env 文件，其优先级低于钥匙串；建议删除以免双份维护。")
+    return 0
 
 
 def match_category(text: str, keywords: dict) -> str | None:
@@ -202,10 +201,10 @@ def do_login(page: Page, username: str, password: str, headed: bool) -> None:
         log(f"[debug] 当前 URL: {page.url}")
         log(f"[debug] 已保存截图 {debug_png.name} 与页面源码 {debug_html.name}（{BB_SYNC_HOME}）")
         raise RuntimeError(
-            "登录失败：请检查 .env 中的凭据，或是否有 MFA/验证码。\n"
+            "登录失败：请检查凭据（bb-sync --login 可重新录入），或是否有 MFA/验证码。\n"
             f"(当前 URL: {page.url})\n"
-            "如有 MFA，请运行 python sync.py --headed 手动在浏览器里完成一次登录，"
-            "登录态会保存在 .browser-profile/，之后无需再手动。"
+            "如有 MFA，请运行 bb-sync --headed 手动在浏览器里完成一次登录，"
+            "登录态会保存在 ~/.bb-sync/.browser-profile/，之后无需再手动。"
         )
     log("[login] 登录成功 ✓")
 
@@ -214,9 +213,14 @@ def ensure_login(page: Page, headed: bool) -> None:
     if is_logged_in(page):
         log("[login] 已有有效登录态（复用 Steel profile）")
         return
-    username, password = load_credentials()
-    if not username or not password:
-        raise RuntimeError("请在 .env 中填写 username / password")
+    creds = load_credentials()
+    log(f"[login] 凭据来源: {creds.source}")
+    if not creds.student_id or not creds.password:
+        raise RuntimeError(
+            "未找到凭据：请运行 bb-sync --login 存入系统钥匙串，"
+            "或在 ~/.bb-sync/.env 中填写 STUDENT_ID / PASSWORD"
+        )
+    username, password = creds.student_id, creds.password
     try:
         do_login(page, username, password, headed)
         return
@@ -511,8 +515,19 @@ def main() -> int:
         "--config",
         help="配置文件路径（默认：当前目录 config.yaml，其次 ~/.bb-sync/config.yaml）",
     )
+    ap.add_argument("--login", action="store_true", help="交互式录入凭据并保存到系统钥匙串后退出")
+    ap.add_argument("--logout", action="store_true", help="从系统钥匙串删除已保存的凭据")
     ap.add_argument("--version", action="version", version=f"bb-sync {__version__}")
     args = ap.parse_args()
+
+    if args.login:
+        return prompt_save_credentials()
+    if args.logout:
+        if delete_credentials():
+            print("已从系统钥匙串删除凭据 ✓")
+        else:
+            print("钥匙串中没有保存的凭据")
+        return 0
 
     config_path = Path(args.config).expanduser() if args.config else find_config_file("config.yaml")
     if not config_path.exists():

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bb-sync"
-version = "0.1.0"
+version = "0.2.0"
 description = "Blackboard 课程资源自动同步：登录 ADFS SSO，增量下载课件/作业/指导与公告"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -16,6 +16,7 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
+    "keyring>=25.7.0",
     "playwright>=1.45",
     "python-dotenv>=1.0",
     "PyYAML>=6.0",
@@ -28,7 +29,7 @@ dev = ["ruff>=0.6", "pyright>=1.1.380"]
 bb-sync = "sync:main"
 
 [tool.setuptools]
-py-modules = ["sync", "steel_backend", "paths"]
+py-modules = ["sync", "steel_backend", "paths", "creds"]
 
 # ------------------------------------------------------------ 质量门禁
 [tool.ruff]
@@ -42,7 +43,7 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 ignore = ["E501", "SIM108"]
 
 [tool.pyright]
-include = ["sync.py", "steel_backend.py", "paths.py", "debug_login.py", "debug_courses.py", "debug_course.py"]
+include = ["sync.py", "steel_backend.py", "paths.py", "creds.py", "debug_login.py", "debug_courses.py", "debug_course.py"]
 exclude = ["courses", ".steel", ".venv", ".workbuddy", ".browser-profile"]
 typeCheckingMode = "basic"
 pythonVersion = "3.11"
