@@ -97,7 +97,10 @@ def build_due_markdown(
     lines.append("")
 
     if not items:
-        lines.extend(["当前没有待办事项。", ""])
+        if failed:
+            lines.extend(["本次未读取到待办，但由于部分课程抓取失败，结果可能不完整。", ""])
+        else:
+            lines.extend(["## Congratulations! 🎉", "", "当前没有待办事项。", ""])
         return "\n".join(lines)
 
     for bucket in _BUCKET_ORDER:

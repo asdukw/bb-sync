@@ -172,6 +172,22 @@ def _print_plan(console: Console, courses: list[Course], root: Path, dry_run: bo
     console.log("")
 
 
+def _scan_due_items(page, courses: list[Course], console: Console) -> tuple[list[DueItem], int]:
+    """逐课程抓取 Due，并返回排序后的条目与失败课程数。"""
+    items: list[DueItem] = []
+    failed = 0
+    for course in courses:
+        try:
+            found = scraper.scrape_due_items(page, course, console)
+        except Exception as exc:  # 单门课失败不阻断其它课程
+            failed += 1
+            console.warn(f"[due] {course.code or course.title} 抓取失败: {exc}")
+            continue
+        items.extend(found)
+        console.log(f"    {course.code or course.title}: 待办 x{len(found)}")
+    return due.sort_due_items(items), failed
+
+
 def run_sync(options: SyncOptions) -> SyncStats:
     """执行一次完整同步。"""
     console = options.console
@@ -212,6 +228,27 @@ def run_sync(options: SyncOptions) -> SyncStats:
             for course in courses:
                 stats.courses.append(course.code or course.title)
                 sync_course(ctx, page, course, options.root / course.slug, options, stats)
+
+            due_items, due_failed = _scan_due_items(page, courses, console)
+            due_path = options.root / "due.md"
+            if options.dry_run:
+                if due_failed == len(courses):
+                    message = "待办抓取全部失败"
+                elif not due_items and not due_failed:
+                    message = "Congratulations! 没有待办"
+                else:
+                    message = f"待办 {len(due_items)} 项"
+                console.log(f"[due] {message}（dry-run，未写入 due.md）")
+            elif due_failed == len(courses):
+                console.warn("[due] 所有课程待办抓取失败，保留现有 due.md")
+            else:
+                due.write_due_markdown(due_path, courses, due_items, failed=due_failed)
+                if due_items:
+                    console.log(f"[due] {len(due_items)} 项 → due.md")
+                elif due_failed:
+                    console.log("[due] 未读取到待办（部分课程失败）→ due.md")
+                else:
+                    console.log("[due] Congratulations! 没有待办 → due.md")
 
             ctx.close()
             browser.close()
@@ -278,17 +315,8 @@ def run_due(options: DueOptions) -> DueStats:
                     "确认已登录且账号下有课程；也可用 bb-sync course list 先看看",
                 )
 
-            items: list[DueItem] = []
-            for course in courses:
-                stats.courses.append(course.code or course.title)
-                try:
-                    found = scraper.scrape_due_items(page, course, console)
-                except Exception as exc:  # 单门课失败不阻断其它课程
-                    stats.failed += 1
-                    console.warn(f"[due] {course.code or course.title} 抓取失败: {exc}")
-                    continue
-                items.extend(found)
-                console.log(f"    {course.code or course.title}: 待办 x{len(found)}")
+            stats.courses = [course.code or course.title for course in courses]
+            items, stats.failed = _scan_due_items(page, courses, console)
 
             if stats.failed == len(courses):
                 raise NetworkError(
@@ -296,7 +324,7 @@ def run_due(options: DueOptions) -> DueStats:
                     "检查网络连接与登录状态，或先用 bb-sync run --headed 刷新登录态",
                 )
 
-            stats.items = due.sort_due_items(items)
+            stats.items = items
             due.write_due_markdown(
                 options.root / "due.md",
                 courses,

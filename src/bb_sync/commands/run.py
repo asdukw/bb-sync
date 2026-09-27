@@ -15,12 +15,12 @@ from bb_sync.core.errors import ConfigError
 
 #: 模块对应的子命令名
 SUBCOMMAND = "run"
-HELP = """执行一次课程同步（下载目录取配置里的 root，可用 --root 临时覆盖）。
+HELP = """执行一次课程同步并更新 due.md（下载目录取配置里的 root，可用 --root 临时覆盖）。
 
 示例：
-  bb-sync run                        增量同步全部课程
-  bb-sync run --course CSC5010       只同步指定课程（可重复）
-  bb-sync run --dry-run              预览会下载什么，不实际下载
+  bb-sync run                        增量同步全部课程并更新待办清单
+  bb-sync run --course CSC5010       只同步指定课程并更新对应待办（可重复）
+  bb-sync run --dry-run              预览下载和待办，不写文件
   bb-sync run --headed               有头模式（首次登录 / 需要人工过 MFA）
   bb-sync run --json                 输出机器可读 JSON，便于脚本消费
 """
@@ -39,7 +39,7 @@ def run(
     ),
     root: str = typer.Option(None, "--root", help="本次同步的下载目录（临时覆盖配置里的 root）"),
 ) -> None:
-    """执行一次课程同步。"""
+    """执行一次课程同步并更新待办清单。"""
     app_ctx: Context = ctx.obj
     console = app_ctx.console
 

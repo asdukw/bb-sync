@@ -2,6 +2,15 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 改进
+
+- `bb-sync run` 在同步课程资源后，复用同一浏览器会话扫描 Due / To Do 并更新
+  `<root>/due.md`；`--dry-run` 只统计待办，不写文件。
+- 完整扫描后没有待办时，`due.md` 写入 `Congratulations! 🎉`；若部分课程抓取失败，
+  则明确提示结果可能不完整，避免误报全部完成。
+
 ## [1.2.0] — 2026-09-28
 
 ### 新增

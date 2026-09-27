@@ -746,7 +746,24 @@ def test_build_due_markdown_prioritizes_and_sorts() -> None:
     assert "[CSC5010](https://bb.cuhk.edu.cn/webapps/blackboard/execute/launcher" in markdown
 
 
-def test_build_due_markdown_empty_and_partial_failure() -> None:
+def test_build_due_markdown_empty_writes_congratulations() -> None:
+    from datetime import date, datetime
+
+    from bb_sync.blackboard.models import Course
+    from bb_sync.core.due import build_due_markdown
+
+    markdown = build_due_markdown(
+        [Course(bb_id="_1_1", title="CSC5010")],
+        [],
+        generated_at=datetime(2026, 9, 28, 8, 30),
+        today=date(2026, 9, 28),
+    )
+
+    assert "## Congratulations! 🎉" in markdown
+    assert "当前没有待办事项" in markdown
+
+
+def test_build_due_markdown_partial_failure_does_not_congratulate() -> None:
     from datetime import date, datetime
 
     from bb_sync.blackboard.models import Course
@@ -760,8 +777,57 @@ def test_build_due_markdown_empty_and_partial_failure() -> None:
         today=date(2026, 9, 28),
     )
 
-    assert "当前没有待办事项" in markdown
+    assert "Congratulations" not in markdown
+    assert "结果可能不完整" in markdown
     assert "1 门课程抓取失败" in markdown
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_run_sync_integrates_due_markdown(monkeypatch, tmp_path: Path, dry_run: bool) -> None:
+    from bb_sync.blackboard.models import Course
+    from bb_sync.core import service
+    from bb_sync.core.config import Settings
+    from bb_sync.core.output import Console
+
+    class Dummy:
+        browser = None
+
+        def close(self) -> None:
+            pass
+
+    class FakePlaywrightContext:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+    course = Course(bb_id="_1_1", title="CSC5010: Artificial Intelligence")
+    monkeypatch.setattr(service.steel, "ensure_server", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service.steel, "create_session", lambda *args, **kwargs: object())
+    monkeypatch.setattr(service.steel, "release_session", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        service.steel, "connect", lambda *args, **kwargs: (Dummy(), Dummy(), object())
+    )
+    monkeypatch.setattr(service, "sync_playwright", lambda: FakePlaywrightContext())
+    monkeypatch.setattr(service, "ensure_login", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service, "sync_course", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service.scraper, "scrape_courses", lambda page, include, console: [course])
+    monkeypatch.setattr(service.scraper, "scrape_due_items", lambda page, course, console: [])
+
+    options = service.SyncOptions(
+        settings=Settings(root=str(tmp_path), announcements=False),
+        config_path=tmp_path / "config.yaml",
+        root=tmp_path,
+        console=Console(quiet=True),
+        dry_run=dry_run,
+    )
+    service.run_sync(options)
+
+    due_file = tmp_path / "due.md"
+    assert due_file.exists() is (not dry_run)
+    if not dry_run:
+        assert "## Congratulations! 🎉" in due_file.read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------- 下载推断

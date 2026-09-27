@@ -116,6 +116,9 @@ esac
 
 > **提示**：`bb-sync run` 的诊断信息（含「同步计划」）全部走 stderr，
 > 所以 `--json` 模式下 stdout 依然干净，可以放心重定向。
+>
+> 正常模式下 `bb-sync run` 还会生成或更新 `<root>/due.md`；`--dry-run` 只统计待办，
+> 不会写文件。
 
 ## 相关
 

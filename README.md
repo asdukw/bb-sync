@@ -57,7 +57,7 @@ bb-sync run
 - 作业 → `assignments/`
 - 指导 / 实验 → `tutorials/`
 - 公告 → `announcements.md`
-- 全部课程待办 → `due.md`（按逾期、今天、明天、未来 7 天等优先级排列）
+- 全部课程待办 → `due.md`（按优先级排列；没有待办时显示 Congratulations）
 
 要修改下载目录：
 
@@ -71,10 +71,10 @@ bb-sync config set root "D:/University/courses"
 
 | 命令 | 作用 |
 | --- | --- |
-| `bb-sync run` | 增量同步全部课程 |
+| `bb-sync run` | 增量同步全部课程并更新 `due.md` |
 | `bb-sync run --headed` | 显示浏览器，适合首次登录或 MFA |
 | `bb-sync run --course CSC5010` | 只同步指定课程，可重复使用 |
-| `bb-sync run --dry-run` | 只预览，不下载 |
+| `bb-sync run --dry-run` | 预览下载和待办，不写文件 |
 | `bb-sync due` | 扫描全部课程主页的 Due / To Do，生成 `due.md` |
 | `bb-sync due --course CSC5010` | 只整理指定课程的待办 |
 | `bb-sync course list` | 列出账号下的课程 |
