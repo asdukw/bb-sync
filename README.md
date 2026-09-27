@@ -46,6 +46,7 @@ bb-sync                     # 增量同步全部课程
 bb-sync --course CSC5010    # 只同步一门课
 bb-sync --root D:/courses   # 指定下载目录（默认 ~/courses）
 bb-sync --dry-run           # 预览会下载什么，不实际下载
+bb-sync --doctor            # 体检：检查前置条件（git/Node/浏览器/网络等）
 bb-sync --version
 ```
 
@@ -71,6 +72,7 @@ bb-sync --version
 ## 常见问题
 
 - **想更换或修改密码** → 再跑一次 `bb-sync --login` 覆盖即可。
+- **不确定环境缺什么** → `bb-sync --doctor` 逐项体检，缺什么、怎么装都会告诉你。
 - **运行异常** → 删掉 `~/.bb-sync/` 目录后重新 `bb-sync --login` 配置即可重置。
 - **首次运行卡在下载 Steel** → 需要 github.com 可访问，代理用户请确认系统代理已开启。
 

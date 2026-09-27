@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
 
+# 同分支连推时只跑最新一次，跳过被取代的旧 run
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   quality:
     runs-on: ubuntu-latest
@@ -27,3 +32,36 @@ jobs:
 
       - name: Pyright type check
         run: uv run pyright
+
+  install-smoke:
+    name: install smoke (clean container)
+    # 模拟裸机：干净容器里按 README 前置条件装好依赖，再从 GitHub 安装 bb-sync 并验证
+    runs-on: ubuntu-latest
+    container: python:3.12-slim
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+        if: github.event_name == 'pull_request'
+
+      - name: Install prerequisites (git + uv)
+        run: |
+          apt-get update -qq && apt-get install -y -qq git ca-certificates >/dev/null
+          pip install --quiet uv
+
+      - name: Install bb-sync
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            uv tool install .
+          else
+            uv tool install git+https://github.com/${{ github.repository }}
+          fi
+
+      - name: Smoke test
+        run: |
+          bb-sync --version
+          # 容器里没有 Node/浏览器，doctor 会报缺项（预期），只断言 Python/git/网络等基础项
+          bb-sync --doctor | tee doctor.txt || true
+          grep -q "✓.*Python" doctor.txt
+          grep -q "✓.*git" doctor.txt
+          grep -q "✓.*网络" doctor.txt

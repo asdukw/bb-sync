@@ -18,11 +18,16 @@ import argparse
 import html
 import importlib.metadata as metadata
 import mimetypes
+import os
 import re
+import shutil
+import subprocess
 import sys
+import time
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
+from urllib import error, request
 from urllib.parse import unquote
 
 import yaml
@@ -31,7 +36,19 @@ from playwright.sync_api import TimeoutError as PWTimeout
 
 from creds import delete_credentials, env_file_exists, load_credentials, save_credentials
 from paths import BB_SYNC_HOME, find_config_file
-from steel_backend import connect, create_session, ensure_server, release_session
+from steel_backend import (
+    connect,
+    create_session,
+    detect_browser,
+    ensure_server,
+    release_session,
+)
+from steel_backend import (
+    healthy as steel_healthy,
+)
+from steel_backend import (
+    is_deployed as steel_deployed,
+)
 
 try:
     __version__ = metadata.version("bb-sync")
@@ -565,6 +582,140 @@ def scrape_announcements(page: Page, course: Course, course_dir: Path, dry_run: 
         log(f"    [warn] 公告抓取失败: {e}")
 
 
+# ---------------------------------------------------------------- doctor
+
+
+def _tool_version(cmd: list[str]) -> str | None:
+    """运行 `<tool> --version`，返回首行；失败返回 None。"""
+    try:
+        out = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=6, encoding="utf-8", errors="ignore"
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    lines = (out.stdout or out.stderr).strip().splitlines()
+    return lines[0].strip() if lines and out.returncode == 0 else None
+
+
+def cmd_doctor() -> int:
+    """体检：逐项检查前置条件，打印 ✓/✗ 与修复提示。"""
+    print(f"bb-sync {__version__} — doctor\n")
+    results: list[tuple[bool, bool]] = []  # (ok, required)
+
+    def check(ok: bool, label: str, detail: str = "", hint: str = "", required: bool = True):
+        results.append((ok, required))
+        print(f"[{'✓' if ok else '✗'}] {label}" + (f"  {detail}" if detail else ""))
+        if not ok and hint:
+            print(f"    → {hint}")
+
+    # Python
+    v = sys.version_info
+    check(
+        (v.major, v.minor) >= (3, 11),
+        "Python",
+        f"{v.major}.{v.minor}.{v.micro}（需要 ≥3.11，uv 安装 bb-sync 时会自动准备）",
+    )
+
+    # git
+    gp = shutil.which("git")
+    gv = _tool_version([gp, "--version"]) if gp else None
+    check(
+        bool(gv),
+        "git",
+        gv or "未找到",
+        "bb-sync 从 GitHub 安装需要 git：winget install --id Git.Git -e",
+    )
+
+    # Node.js ≥22
+    np = shutil.which("node")
+    nv = _tool_version([np, "--version"]) if np else None
+    node_ok = False
+    if nv:
+        m = re.match(r"v(\d+)", nv)
+        node_ok = bool(m) and int(m.group(1)) >= 22
+    check(
+        node_ok,
+        "Node.js",
+        nv or "未找到",
+        "浏览器后端需要 Node.js ≥22（自带 npm）：winget install OpenJS.NodeJS.LTS",
+    )
+
+    # npm
+    npx = shutil.which("npm")
+    npv = _tool_version([npx, "--version"]) if npx else None
+    check(bool(npv), "npm", npv or "未找到", "npm 随 Node.js 一起安装，单独缺失请重装 Node.js")
+
+    # 浏览器（Chrome / Edge）
+    custom = os.environ.get("CHROME_EXECUTABLE_PATH")
+    if custom and Path(custom).exists():
+        check(True, "浏览器", f"自定义 {custom}")
+    else:
+        browser = detect_browser()
+        if browser:
+            name = "Edge" if "edge" in Path(browser).name.lower() else "Chrome"
+            check(True, "浏览器", f"{name} ({browser})")
+        else:
+            check(
+                False,
+                "浏览器",
+                "未检测到 Chrome/Edge",
+                "安装 Google Chrome 或 Microsoft Edge；装在非默认位置时设置环境变量 CHROME_EXECUTABLE_PATH",
+            )
+
+    # 网络（GitHub 可达性：首次部署需下载 Steel 源码；代理抖动可能瞬时失败，重试降低误报）
+    net_ok, net_err = False, ""
+    for _ in range(3):
+        try:
+            req = request.Request("https://github.com", headers={"User-Agent": "bb-sync"})
+            request.urlopen(req, timeout=6)
+            net_ok = True
+            break
+        except error.HTTPError:  # 有响应即视为可达（如 301/403）
+            net_ok = True
+            break
+        except Exception as e:
+            net_err = str(e)
+            time.sleep(1.5)
+    check(
+        net_ok,
+        "网络",
+        "github.com 可达" if net_ok else f"github.com 不可达 ({net_err})",
+        "代理用户请确认系统代理已开启",
+    )
+
+    # 凭据
+    try:
+        c = load_credentials()
+        if c.student_id and c.password:
+            check(True, "凭据", f"已保存（{c.source}）", required=False)
+        else:
+            check(False, "凭据", "未配置", "运行 bb-sync --login 录入学号密码", required=False)
+    except Exception as e:
+        check(False, "凭据", f"读取失败: {e}", "运行 bb-sync --login 重新录入", required=False)
+
+    # Steel 后端
+    if steel_healthy():
+        check(True, "Steel 后端", "服务端运行中", required=False)
+    elif steel_deployed():
+        check(True, "Steel 后端", "已部署（未运行，同步时自动启动）", required=False)
+    else:
+        check(
+            False,
+            "Steel 后端",
+            "未部署",
+            "首次同步时自动下载部署（依赖 Node.js 与网络），无需手动操作",
+            required=False,
+        )
+
+    required_fail = sum(1 for ok, req in results if req and not ok)
+    total_ok = sum(1 for ok, _ in results if ok)
+    print(
+        f"\n{total_ok}/{len(results)} 项通过"
+        + ("，存在缺失项，请按提示修复" if required_fail else "")
+    )
+    return 1 if required_fail else 0
+
+
 # ---------------------------------------------------------------- main
 
 
@@ -585,11 +736,16 @@ def main() -> int:
     )
     ap.add_argument("--login", action="store_true", help="交互式录入凭据并保存到系统钥匙串后退出")
     ap.add_argument("--logout", action="store_true", help="从系统钥匙串删除已保存的凭据")
+    ap.add_argument(
+        "--doctor", action="store_true", help="体检：检查前置条件（git/Node/浏览器/网络等）"
+    )
     ap.add_argument("--version", action="version", version=f"bb-sync {__version__}")
     args = ap.parse_args()
 
     if args.login:
         return prompt_save_credentials()
+    if args.doctor:
+        return cmd_doctor()
     if args.logout:
         if delete_credentials():
             print("已从系统钥匙串删除凭据 ✓")
@@ -686,6 +842,9 @@ def main() -> int:
                     log(f"    ↓ [{it.category}] {name}")
                 elif status == "would-download":
                     log(f"    ? [{it.category}] {name} (dry-run)")
+                elif status == "exists":
+                    # 首次运行也可能出现：同一附件挂在多个内容区（URL 不同但落盘路径相同）
+                    log(f"    = [{it.category}] {name} (已存在，跳过)")
                 elif status == "empty":
                     log(f"    ! [{it.category}] {name} 内容为空，跳过")
 

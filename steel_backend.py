@@ -41,7 +41,7 @@ def _node_bin() -> str:
     raise RuntimeError("未找到 Node.js，请先安装 Node.js（或将其加入 PATH）")
 
 
-def _detect_browser() -> str | None:
+def detect_browser() -> str | None:
     """探测本机 Chromium 内核浏览器：Chrome 优先，Edge 兜底。
 
     Steel 自带的探测只认 Chrome 标准路径，裸机（仅预装 Edge）会直接失败；
@@ -197,7 +197,7 @@ def start_server(headed: bool, wait: int = 120) -> None:
     env["HOST"] = "127.0.0.1"
     env["PORT"] = STEEL_URL.rsplit(":", 1)[-1]
     if not env.get("CHROME_EXECUTABLE_PATH"):
-        browser = _detect_browser()
+        browser = detect_browser()
         if browser:
             env["CHROME_EXECUTABLE_PATH"] = browser
             if "edge" in Path(browser).name.lower():
