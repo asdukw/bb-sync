@@ -521,6 +521,34 @@ def test_steel_deploy_prefers_legacy_over_broken_new_root(monkeypatch, tmp_path:
     assert len(list(new_root.parent.glob(".steel.broken-*"))) == 1
 
 
+def test_steel_deploy_backs_up_both_broken_roots(monkeypatch, tmp_path: Path) -> None:
+    """新旧两个目录都残缺：各自备份，再全新下载安装。"""
+    from bb_sync import paths
+    from bb_sync.browser import steel
+
+    legacy = paths.BB_SYNC_HOME / ".steel"
+    new_root = tmp_path / "home" / ".steel"
+    legacy.mkdir(parents=True)
+    (legacy / "legacy-leftover.txt").write_text("legacy", encoding="utf-8")
+    new_root.mkdir(parents=True)
+    (new_root / "new-leftover.txt").write_text("new", encoding="utf-8")
+    _point_steel_at(monkeypatch, new_root)
+    calls = _stub_fresh_install(monkeypatch, "fresh")
+
+    steel.deploy(steel._SILENT)
+
+    leftovers = {
+        f.read_text(encoding="utf-8")
+        for backup in new_root.parent.glob(".steel.broken-*")
+        for f in backup.glob("*leftover.txt")
+    }
+    assert leftovers == {"legacy", "new"}
+    assert not legacy.exists()
+    assert calls == {"download": 1, "npm": 1}
+    assert (new_root / "marker.txt").read_text(encoding="utf-8") == "fresh"
+    assert steel.is_deployed()
+
+
 # ---------------------------------------------------------------- 抓取辅助函数
 
 

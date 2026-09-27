@@ -301,7 +301,8 @@ def deploy(console: Console = _SILENT) -> None:
     - 就绪（源码 + tsx 依赖都在）→ 直接复用，跳过下载与安装
     - bb-sync 装的旧版本（元数据里的源码地址与当前不一致）→ 下载后原地更新
     - 残缺/损坏 → 备份为 ``.steel.broken-<时间戳>`` 后重装
-    - 旧版 ``BB_SYNC_HOME/.steel`` → 自动迁移复用，随后清理旧目录
+    - 旧版 ``BB_SYNC_HOME/.steel`` → 自动迁移复用，随后清理旧目录；
+      ``~/.steel`` 不可用时优先回退到它，两处都不可用才重新下载
 
     源码走 codeload zip（不依赖 git）；依赖安装在 ``.steel/api``
     （npm workspaces 自动提升到 ``.steel/node_modules``）。
@@ -309,6 +310,9 @@ def deploy(console: Console = _SILENT) -> None:
     if STEEL_ROOT.exists() and not is_deployed():
         _quarantine_broken_root(console)
     migrated = _migrate_legacy_root(console)
+    if migrated and not is_deployed():
+        # 旧目录本身也不可用：同样备份保留，再走全新下载
+        _quarantine_broken_root(console)
 
     if is_deployed():
         if not _needs_upgrade():
