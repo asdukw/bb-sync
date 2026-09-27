@@ -1,22 +1,35 @@
 # bb-sync — Blackboard 课程资源自动同步
 
-自动登录大学 Blackboard 教学平台，把 **课件 / 作业 / 指导(tutorial)** 下载到对应的课程文件夹，并保存公告。支持增量同步（已下载的文件自动跳过）。
+自动登录大学 Blackboard 教学平台，把 **课件(lecutres) / 作业(assignments) / 指导(tutorial)** 下载到对应的课程文件夹，并保存公告。支持增量同步（已下载的文件自动跳过）。
 
 > **免责声明**：本项目仅供个人学习与研究使用，请自行遵守所在学校 IT 使用政策；
 > 与 Blackboard Inc. 及任何高校官方均无关联。下载的课程资料版权归原作者与学校所有，请勿二次分发。
 
-## 安装
+## 前置条件
 
-依赖管理使用 [uv](https://docs.astral.sh/uv/)。
+- [uv](https://docs.astral.sh/uv/getting-started/installation/) — Python 包管理器（**不需要单独装 Python**，uv 会自动下载并管理所需版本）
+
+  ```powershell
+  powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+  ```
+
+- [Git](https://git-scm.com/downloads) — 安装命令会以 `git+https://` 形式从 GitHub 拉取本项目，因此系统里必须有 git；Windows 可用 `winget install --id Git.Git -e` 或直接运行官网安装包
+
+装完后**重开一个终端**（让 PATH 生效）
+
+## 验证
 
 ```powershell
-# 1. 安装 uv（二选一）
-choco install uv
+uv --version    # 输出 uv 版本号
+git --version   # 输出 git 版本号
+```
 
-# 或
-powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+两条命令都能出版本号即可继续；如果提示"无法识别"，说明 PATH 还没生效，再重开一个终端试试。
 
-# 2. 安装为全局 CLI 命令
+## 安装
+
+```powershell
+# 安装为全局 CLI 命令
 uv tool install git+https://github.com/asdukw/bb-sync
 
 # 更新到最新版
@@ -32,6 +45,8 @@ bb-sync --root D:/courses   # 指定下载目录（默认 ~/courses）
 bb-sync --dry-run           # 预览会下载什么，不实际下载
 bb-sync --version
 ```
+
+首次运行会提示输入学号和密码（存入系统凭据管理器，不落明文）；之后运行直接复用登录态。
 
 ## 文件下载到哪里
 
