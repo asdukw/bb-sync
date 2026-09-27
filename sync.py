@@ -78,6 +78,33 @@ def load_config(config_path: Path) -> dict:
         return yaml.safe_load(f)
 
 
+# 首次运行自动生成的默认配置（与内置默认值一致，用户可按需修改）
+DEFAULT_CONFIG = """\
+# bb-sync 配置（首次运行自动生成，可按需修改）
+
+# 课程资源根目录（支持 ~ 和相对路径）
+root: ~/courses
+
+# 同步哪些课程：all = 全部，或列表如 [CSC5010, DDA5002]
+include: all
+
+# 课程代码 -> 本地文件夹名 的显式映射（未列出的自动命名）
+course_dirs: {}
+
+# 内容归类关键词：先匹配 assignments，再 tutorials，其余归 lectures
+keywords:
+  assignments: ["assignment", "homework", "作业", "hw"]
+  tutorials: ["tutorial", "lab", "实验", "指导", "recitation"]
+  lectures: ["lecture", "课件", "讲义", "slides", "notes", "note"]
+
+# 公告是否同步（写入课程目录 announcements.md）
+announcements: true
+
+# 内容子文件夹递归深度（1 = 只下内容区第一层）
+max_depth: 3
+"""
+
+
 def prompt_credentials() -> tuple[str, str]:
     """交互式录入凭据并保存到系统钥匙串，返回 (学号, 密码)。密码不回显。"""
     import getpass
@@ -542,10 +569,13 @@ def main() -> int:
 
     config_path = Path(args.config).expanduser() if args.config else find_config_file("config.yaml")
     if not config_path.exists():
-        raise SystemExit(
-            f"未找到配置文件：{config_path}\n"
-            "请把仓库里的 config.yaml 复制到当前目录或 ~/.bb-sync/ 下再运行。"
-        )
+        if args.config:  # 用户显式指定的配置文件不存在时直接报错
+            raise SystemExit(f"未找到配置文件：{config_path}")
+        # 未做任何配置：自动生成默认配置到 ~/.bb-sync/
+        config_path = BB_SYNC_HOME / "config.yaml"
+        BB_SYNC_HOME.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(DEFAULT_CONFIG, encoding="utf-8")
+        log(f"[info] 已生成默认配置 {config_path}（可按需修改）")
     cfg = load_config(config_path)
     keywords = cfg.get("keywords", {})
     max_depth = int(cfg.get("max_depth", 3))
