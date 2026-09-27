@@ -9,6 +9,7 @@ bb-sync — Blackboard 课程资源自动同步
     bb-sync --headed            # 有头模式（首次登录 / 需要人工过 MFA 时用）
     bb-sync --dry-run           # 只列出将要下载的文件，不实际下载
     bb-sync --course CSC5010    # 只同步指定课程
+    bb-sync --root D:/courses   # 指定课程文件下载目录（默认 ~/courses）
 """
 
 from __future__ import annotations
@@ -77,18 +78,25 @@ def load_config(config_path: Path) -> dict:
         return yaml.safe_load(f)
 
 
-def prompt_save_credentials() -> int:
-    """交互式录入凭据并存入系统钥匙串（bb-sync --login）。"""
+def prompt_credentials() -> tuple[str, str]:
+    """交互式录入凭据并保存到系统钥匙串，返回 (学号, 密码)。密码不回显。"""
     import getpass
 
+    print("[login] 未找到已保存的凭据，请录入（保存后无需重复输入）")
     student_id = input("学号（学生）/ 邮箱前缀（教职工）: ").strip()
     if not student_id:
         raise SystemExit("学号不能为空")
-    password = getpass.getpass("密码: ")
+    password = getpass.getpass("密码（输入不回显）: ")
     if not password:
         raise SystemExit("密码不能为空")
     backend = save_credentials(student_id, password)
-    print(f"凭据已存入系统钥匙串（{backend}），明文不再落盘 ✓")
+    print(f"凭据已保存到系统钥匙串（{backend}），明文不再落盘 ✓")
+    return student_id, password
+
+
+def prompt_save_credentials() -> int:
+    """bb-sync --login：交互式录入凭据并存入系统钥匙串。"""
+    prompt_credentials()
     if env_file_exists():
         print("[提示] 检测到 .env 文件，其优先级低于钥匙串；建议删除以免双份维护。")
     return 0
@@ -214,13 +222,12 @@ def ensure_login(page: Page, headed: bool) -> None:
         log("[login] 已有有效登录态（复用 Steel profile）")
         return
     creds = load_credentials()
-    log(f"[login] 凭据来源: {creds.source}")
-    if not creds.student_id or not creds.password:
-        raise RuntimeError(
-            "未找到凭据：请运行 bb-sync --login 存入系统钥匙串，"
-            "或在 ~/.bb-sync/.env 中填写 STUDENT_ID / PASSWORD"
-        )
-    username, password = creds.student_id, creds.password
+    if creds.student_id and creds.password:
+        log(f"[login] 凭据来源: {creds.source}")
+        username, password = creds.student_id, creds.password
+    else:
+        # 本地无凭据：交互式录入（密码不回显），保存后本次直接使用
+        username, password = prompt_credentials()
     try:
         do_login(page, username, password, headed)
         return
@@ -512,6 +519,10 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="只列出文件，不下载")
     ap.add_argument("--course", action="append", help="只同步指定课程代码（可多次）")
     ap.add_argument(
+        "--root",
+        help="课程文件下载目录（默认 ~/courses，也可在 config.yaml 的 root 里配置；此项优先）",
+    )
+    ap.add_argument(
         "--config",
         help="配置文件路径（默认：当前目录 config.yaml，其次 ~/.bb-sync/config.yaml）",
     )
@@ -539,10 +550,19 @@ def main() -> int:
     keywords = cfg.get("keywords", {})
     max_depth = int(cfg.get("max_depth", 3))
 
-    root = Path(cfg.get("root", "~/courses")).expanduser()
-    if not root.is_absolute():  # 相对路径以配置文件所在目录为基准
-        root = (config_path.parent / root).resolve()
+    if args.root:
+        root = Path(args.root).expanduser()
+        if not root.is_absolute():  # 相对路径以当前工作目录为基准
+            root = (Path.cwd() / root).resolve()
+    else:
+        root = Path(cfg.get("root", "~/courses")).expanduser()
+        if not root.is_absolute():  # 相对路径以配置文件所在目录为基准
+            root = (config_path.parent / root).resolve()
+    first_run = not root.exists()
     root.mkdir(parents=True, exist_ok=True)
+    if first_run:
+        log(f"[info] 首次运行：课程文件将下载到 {root}")
+        log("       （如需修改，可用 --root 参数或 config.yaml 里的 root）")
 
     include = args.course if args.course else cfg.get("include", "all")
     if include != "all" and isinstance(include, list):
