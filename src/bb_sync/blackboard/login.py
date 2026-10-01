@@ -14,7 +14,7 @@ from pathlib import Path
 from playwright.sync_api import Page
 from playwright.sync_api import TimeoutError as PWTimeout
 
-from bb_sync import paths
+from bb_sync import ISSUES_URL, paths
 from bb_sync.blackboard.models import (
     _PORTAL_HOME,
     ADFS_NEXT,
@@ -27,22 +27,27 @@ from bb_sync.core.errors import AuthError
 from bb_sync.core.output import Console
 from bb_sync.creds import Credentials, load_credentials, save_credentials
 
+#: Blackboard 主机名；用于判断当前页面是否已回到站点
+BB_HOST = "bb.cuhk.edu.cn"
+
+
+def _on_blackboard(page: Page) -> bool:
+    """当前是否已停在 Blackboard（而非登录页 / ADFS / STS）。"""
+    url = page.url.lower()
+    return BB_HOST in url and not any(marker in url for marker in ("login", "adfs", "sts."))
+
 
 def is_logged_in(page: Page) -> bool:
-    """通过访问门户首页判断登录态是否有效。"""
+    """访问门户首页，判断登录态是否有效。
+
+    判定依据是「有没有被踢回登录 / ADFS 页」，而不是页面文案：门户首页正文由 JS
+    异步渲染，按 ``Courses`` / ``课程`` 等关键词判断会在**已登录时误报未登录**（实测踩到），
+    导致多跑一遍登录流程、点完登录按钮又回到门户，最后卡在 ADFS 选择器上。
+    """
     try:
         page.goto(_PORTAL_HOME, wait_until="domcontentloaded", timeout=30000)
         page.wait_for_timeout(2000)
-        url = page.url
-        if "login" in url.lower() or "adfs" in url.lower() or "sts." in url.lower():
-            return False
-        content = page.content()
-        return (
-            "user_id" not in content
-            or "My Institutions" in content
-            or "课程" in content
-            or "Courses" in content
-        )
+        return _on_blackboard(page)
     except PWTimeout:
         return False
 
@@ -83,7 +88,8 @@ def do_login(page: Page, username: str, password: str) -> None:
             f"登录失败（当前 URL: {_safe_url(page)}）：{detail}",
             f"已保存登录现场到 {home}（debug_login.png / debug_login.html）。"
             "若页面停在 ADFS / MFA / 验证码，请用 bb-sync run --headed 手动完成；"
-            "若是登录页改版导致选择器失效，请把 debug_login.html 反馈给开发者。",
+            f"若怀疑是登录流程改版或 bb-sync 的问题，欢迎到 {ISSUES_URL} 提 issue，"
+            "并附上 debug_login.html（以及上面这行 URL）。",
         ) from exc
 
 
@@ -95,30 +101,34 @@ def _perform_login(page: Page, username: str, password: str) -> None:
     with page.expect_navigation(wait_until="domcontentloaded", timeout=30000):
         page.click("input[name='login']")
 
-    # ADFS 登录页（分页式：先账号 → 提交 → 再密码；少数配置同页显示）
-    page.wait_for_selector(ADFS_USER, timeout=20000)
-    page.fill(ADFS_USER, username)
+    # 点「登录」后有两种走向：
+    #  1) SSO 已生效 → 直接回到 BB 门户（登录态有效却被误判为未登录时会走这里）
+    #  2) 未登录 → 跳 ADFS，需要填账号 / 密码
+    if not _on_blackboard(page):
+        # ADFS 登录页（分页式：先账号 → 提交 → 再密码；少数配置同页显示）
+        page.wait_for_selector(ADFS_USER, timeout=20000)
+        page.fill(ADFS_USER, username)
 
-    if not page.locator(ADFS_PASS).first.is_visible():
-        # 第一页只有账号：点「下一步」翻到密码页
+        if not page.locator(ADFS_PASS).first.is_visible():
+            # 第一页只有账号：点「下一步」翻到密码页
+            try:
+                page.click(ADFS_NEXT, timeout=8000)
+            except PWTimeout:
+                page.press(ADFS_USER, "Enter")
+            page.wait_for_selector(ADFS_PASS, state="visible", timeout=20000)
+
+        page.fill(ADFS_PASS, password)
         try:
-            page.click(ADFS_NEXT, timeout=8000)
+            with page.expect_navigation(wait_until="domcontentloaded", timeout=30000):
+                page.click(ADFS_SUBMIT, timeout=8000)
         except PWTimeout:
-            page.press(ADFS_USER, "Enter")
-        page.wait_for_selector(ADFS_PASS, state="visible", timeout=20000)
-
-    page.fill(ADFS_PASS, password)
-    try:
-        with page.expect_navigation(wait_until="domcontentloaded", timeout=30000):
-            page.click(ADFS_SUBMIT, timeout=8000)
-    except PWTimeout:
-        page.press(ADFS_PASS, "Enter")
-        page.wait_for_load_state("domcontentloaded", timeout=20000)
+            page.press(ADFS_PASS, "Enter")
+            page.wait_for_load_state("domcontentloaded", timeout=20000)
 
     # 等待回到 Blackboard
     for _ in range(30):
         page.wait_for_timeout(1000)
-        if "bb.cuhk.edu.cn" in page.url and "adfs" not in page.url and "sts." not in page.url:
+        if _on_blackboard(page):
             break
 
     if not is_logged_in(page):

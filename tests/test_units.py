@@ -1628,37 +1628,53 @@ class _NullNavigation:
 
 
 class _FakeLoginPage:
-    """登录流程的假 Page，只覆盖 ``do_login`` 会触达的接口。
+    """登录流程的假 Page，只覆盖 ``do_login`` / ``is_logged_in`` 会触达的接口。
 
-    模拟真实失败：登录页主按钮存在，点「登录」后跳到 ADFS，但账号输入框不出现。
+    默认模拟真实失败：登录页主按钮存在，点「登录」后跳到 ADFS，但账号输入框不出现。
+    ``land_on="portal"`` 则模拟「其实已登录」——点登录后直接回到 BB 门户。
     """
 
     ADFS_URL = "https://adfs.cuhk.edu.cn/adfs/ls/"
+    PORTAL_URL = (
+        "https://bb.cuhk.edu.cn/webapps/portal/execute/tabs/tabAction?tab_tab_group_id=_1_1"
+    )
+    LOGIN_URL = "https://bb.cuhk.edu.cn/webapps/login/"
 
-    def __init__(self, *, url: str = "https://bb.cuhk.edu.cn/webapps/login/") -> None:
+    def __init__(
+        self,
+        *,
+        url: str = "https://bb.cuhk.edu.cn/webapps/login/",
+        land_on: str = "adfs",
+        goto_url: str | None = None,
+    ) -> None:
         self.url = url
         self.goto_error: Exception | None = None
         self.screenshots: list[str] = []
+        self._land_on = land_on
+        self._goto_url = goto_url  # 非空则 goto 后停在指定页面（模拟被踢回登录页）
 
     def goto(self, url: str, **kwargs):
         if self.goto_error is not None:
             raise self.goto_error
-        self.url = url
+        self.url = self._goto_url or url
         return None
 
     def wait_for_selector(self, selector: str, timeout=None, state=None):
-        # 登录页主按钮存在；点「登录」后跳 ADFS，但账号输入框始终不出现
+        # 登录页主按钮存在；其余选择器（ADFS 账号/密码框）一律超时
         if "input[name='login']" in selector:
             return None
         from playwright.sync_api import TimeoutError as PWTimeout
 
         raise PWTimeout(f"waiting for {selector}")
 
+    def wait_for_timeout(self, ms: int) -> None:
+        return None
+
     def expect_navigation(self, **kwargs) -> _NullNavigation:
         return _NullNavigation()
 
     def click(self, selector: str, **kwargs) -> None:
-        self.url = self.ADFS_URL
+        self.url = self.ADFS_URL if self._land_on == "adfs" else self.PORTAL_URL
 
     def screenshot(self, path=None, full_page=False, timeout=None):
         if path:
@@ -1750,3 +1766,28 @@ def test_download_item_degrades_after_streaming_failure(tmp_path: Path) -> None:
     assert status2 == "downloaded"
     assert len(opener.requests) == 1  # 已降级：后续文件跳过流式通道
     assert len(browser.calls) == 2
+
+
+def test_is_logged_in_true_when_portal_reached() -> None:
+    """停在 BB 门户即视为已登录，不再按页面文案关键词误判。"""
+    from bb_sync.blackboard.login import is_logged_in
+
+    assert is_logged_in(_FakeLoginPage()) is True  # type: ignore[arg-type]
+
+
+def test_is_logged_in_false_when_bounced_to_login() -> None:
+    from bb_sync.blackboard.login import is_logged_in
+
+    page = _FakeLoginPage(goto_url=_FakeLoginPage.LOGIN_URL)
+    assert is_logged_in(page) is False  # type: ignore[arg-type]
+
+
+def test_do_login_accepts_already_authenticated_portal() -> None:
+    """登录态有效、点登录后回到门户时，不应再去等 ADFS 表单。"""
+    from bb_sync.blackboard.login import do_login
+
+    page = _FakeLoginPage(land_on="portal")
+    do_login(page, "s123", "pw")  # type: ignore[arg-type]
+
+    assert page.url == _FakeLoginPage.PORTAL_URL
+    assert page.screenshots == []  # 成功路径不落调试产物

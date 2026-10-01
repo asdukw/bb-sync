@@ -30,7 +30,7 @@ from typing import Any
 
 import click
 
-from bb_sync import __version__
+from bb_sync import ISSUES_URL, __version__
 from bb_sync.core.errors import BbSyncError, ExitCode, exit_code_for
 
 #: 命令名 → (模块名, 一句话帮助)
@@ -287,11 +287,14 @@ def main() -> None:
             raise SystemExit(exc.exit_code) from None
         if isinstance(exc, SystemExit):
             raise
-        # 兜底：非预期异常显示堆栈，方便报 issue
+        # 兜底：非预期异常显示堆栈，并明确引导到 issue 反馈
         sys.stderr.write(f"✗ 未预期的错误：{exc}\n")
         import traceback
 
         traceback.print_exc()
+        sys.stderr.write(
+            f"  这看起来是 bb-sync 的问题，欢迎到 {ISSUES_URL} 提 issue 并附上以上信息\n"
+        )
         raise SystemExit(exit_code_for(exc)) from None
 
 
