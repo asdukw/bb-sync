@@ -1290,3 +1290,261 @@ def test_all_errors_share_base_and_unique_codes() -> None:
         assert issubclass(cls, BbSyncError)
     codes = [int(c("").exit_code) for c in classes]
     assert len(set(codes)) == len(codes), "各异常类型的退出码必须互不相同"
+
+
+# ---------------------------------------------------------------- 流式下载
+
+
+class _FakeResponse:
+    """最小流式响应替身：支持分块 read / headers / status，并记录读取进度。"""
+
+    def __init__(self, body: bytes, *, headers: dict | None = None, status: int = 200) -> None:
+        self._body = body
+        self._pos = 0
+        self.headers = headers or {}
+        self.status = status
+        self.closed = False
+
+    def read(self, size: int = -1) -> bytes:
+        if size is None or size < 0:
+            size = len(self._body) - self._pos
+        chunk = self._body[self._pos : self._pos + size]
+        self._pos += len(chunk)
+        return chunk
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _FakeOpener:
+    """按顺序弹出响应或异常，并记录请求，便于断言 Range 头。"""
+
+    def __init__(self, *items) -> None:
+        self._items = list(items)
+        self.requests: list = []
+
+    def open(self, request, timeout=None):
+        self.requests.append(request)
+        item = self._items.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+class _FakeBrowserResponse:
+    """Playwright 请求上下文的响应替身（只支持兜底路径用到的接口）。"""
+
+    def __init__(self, body: bytes, headers: dict | None = None) -> None:
+        self._body = body
+        self.headers = headers or {}
+
+    def body(self) -> bytes:
+        return self._body
+
+
+class _FakeRequestContext:
+    """Playwright ``APIRequestContext`` 的替身。"""
+
+    def __init__(self, response) -> None:
+        self._response = response
+        self.calls: list[tuple] = []
+
+    def get(self, url: str, timeout: int | None = None):
+        self.calls.append((url, timeout))
+        return self._response
+
+
+def _file_item(name: str, *, category: str = "lectures"):
+    from bb_sync.blackboard.models import FileItem
+
+    return FileItem(name=name, url="https://bb.cuhk.edu.cn/bbcswebdav/f", category=category)
+
+
+def test_download_item_streams_and_writes_atomically(tmp_path: Path) -> None:
+    from bb_sync.blackboard.downloader import DownloadClient, download_item
+
+    body = b"%PDF-1.7" + b"x" * 5000
+    opener = _FakeOpener(_FakeResponse(body, headers={"content-length": str(len(body))}))
+    client = DownloadClient(opener=opener, retries=0, backoff=0.0)
+
+    status, name = download_item(client, _file_item("Lec 01"), tmp_path, dry_run=False)
+
+    assert (status, name) == ("downloaded", "Lec 01.pdf")
+    target = tmp_path / "lectures" / "Lec 01.pdf"
+    assert target.read_bytes() == body
+    # 原子落盘：完成后不留 .part
+    assert not list(tmp_path.rglob("*.part"))
+
+
+def test_download_item_dry_run_only_reads_header(tmp_path: Path) -> None:
+    from bb_sync.blackboard.downloader import SNIFF_BYTES, DownloadClient, download_item
+
+    body = b"%PDF-1.7" + b"y" * (SNIFF_BYTES * 4)
+    resp = _FakeResponse(body, headers={"content-length": str(len(body))})
+    client = DownloadClient(opener=_FakeOpener(resp), retries=0, backoff=0.0)
+
+    status, name = download_item(client, _file_item("big"), tmp_path, dry_run=True)
+
+    assert (status, name) == ("would-download", "big.pdf")
+    assert not (tmp_path / "lectures" / "big.pdf").exists()
+    # dry-run 不应把整个文件拉下来，只读到文件头
+    assert resp._pos <= SNIFF_BYTES
+
+
+def test_download_item_skips_same_size_and_suffix(tmp_path: Path) -> None:
+    from bb_sync.blackboard.downloader import (
+        SIZE_DEDUP_THRESHOLD,
+        DownloadClient,
+        build_index,
+        download_item,
+    )
+
+    size = SIZE_DEDUP_THRESHOLD + 100
+    (tmp_path / "old.pdf").write_bytes(b"z" * size)
+    index = build_index(tmp_path)
+    resp = _FakeResponse(b"z" * size, headers={"content-length": str(size)})
+    client = DownloadClient(opener=_FakeOpener(resp), retries=0, backoff=0.0)
+
+    status, name = download_item(
+        client, _file_item("renamed.pdf"), tmp_path, dry_run=False, index=index
+    )
+
+    assert (status, name) == ("exists", "old.pdf")
+
+
+def test_download_item_updates_index_for_same_run(tmp_path: Path) -> None:
+    from bb_sync.blackboard.downloader import SIZE_DEDUP_THRESHOLD, DownloadClient, download_item
+
+    size = SIZE_DEDUP_THRESHOLD + 100
+    body = b"q" * size
+    first = DownloadClient(
+        opener=_FakeOpener(_FakeResponse(body, headers={"content-length": str(size)})),
+        retries=0,
+        backoff=0.0,
+    )
+    index: dict = {}
+
+    status1, _ = download_item(first, _file_item("a.pdf"), tmp_path, dry_run=False, index=index)
+    second = DownloadClient(
+        opener=_FakeOpener(_FakeResponse(body, headers={"content-length": str(size)})),
+        retries=0,
+        backoff=0.0,
+    )
+    status2, name2 = download_item(
+        second, _file_item("b.pdf"), tmp_path, dry_run=False, index=index
+    )
+
+    assert status1 == "downloaded"
+    # 同一轮里，不同名但同体积同后缀的大文件应命中新写入的索引
+    assert (status2, name2) == ("exists", "lectures/a.pdf")
+
+
+def test_download_item_empty_body_is_empty(tmp_path: Path) -> None:
+    from bb_sync.blackboard.downloader import DownloadClient, download_item
+
+    client = DownloadClient(
+        opener=_FakeOpener(_FakeResponse(b"", headers={"content-length": "0"})),
+        retries=0,
+        backoff=0.0,
+    )
+
+    status, name = download_item(client, _file_item("nothing.pdf"), tmp_path, dry_run=False)
+
+    assert (status, name) == ("empty", "nothing.pdf")
+    assert not (tmp_path / "lectures" / "nothing.pdf").exists()
+
+
+def test_download_item_partial_transfer_leaves_no_target(tmp_path: Path) -> None:
+    """中途失败只留 .part，绝不产生会被后续当成「已存在」的半截目标文件。"""
+    from bb_sync.blackboard.downloader import DownloadClient, download_item
+
+    resp = _FakeResponse(b"0123456789", headers={"content-length": "1000"})
+    client = DownloadClient(opener=_FakeOpener(resp), retries=0, backoff=0.0)
+
+    with pytest.raises(OSError):
+        download_item(client, _file_item("doc.bin"), tmp_path, dry_run=False)
+
+    assert not (tmp_path / "lectures" / "doc.bin").exists()
+    part = tmp_path / "lectures" / "doc.bin.part"
+    assert part.read_bytes() == b"0123456789"
+
+
+def test_download_item_resumes_existing_part_via_range(tmp_path: Path) -> None:
+    from bb_sync.blackboard.downloader import PART_SUFFIX, DownloadClient, download_item
+
+    head = b"%PDF-1.7 head"
+    tail = b"rest-of-file" * 200
+    full = head + tail
+    cat = tmp_path / "lectures"
+    cat.mkdir(parents=True)
+    part = cat / ("doc.pdf" + PART_SUFFIX)
+    part.write_bytes(head)
+
+    # 第一次请求（探测取名）返回全量；发现 .part 后关闭并按 Range 重开
+    peek = _FakeResponse(full, headers={"content-length": str(len(full))})
+    resume = _FakeResponse(
+        tail,
+        headers={
+            "content-length": str(len(tail)),
+            "content-range": f"bytes {len(head)}-{len(full) - 1}/{len(full)}",
+        },
+        status=206,
+    )
+    opener = _FakeOpener(peek, resume)
+    client = DownloadClient(opener=opener, retries=0, backoff=0.0)
+
+    status, name = download_item(client, _file_item("doc.pdf"), tmp_path, dry_run=False)
+
+    assert (status, name) == ("downloaded", "doc.pdf")
+    assert (cat / "doc.pdf").read_bytes() == full
+    assert not part.exists()
+    assert opener.requests[1].get_header("Range") == f"bytes={len(head)}-"
+
+
+def test_download_item_retries_transient_error(tmp_path: Path) -> None:
+    from bb_sync.blackboard.downloader import DownloadClient, download_item
+
+    body = b"%PDF-1.7" + b"r" * 100
+    opener = _FakeOpener(
+        TimeoutError("瞬时超时"),
+        _FakeResponse(body, headers={"content-length": str(len(body))}),
+    )
+    client = DownloadClient(opener=opener, retries=1, backoff=0.0)
+
+    status, _ = download_item(client, _file_item("retry"), tmp_path, dry_run=False)
+
+    assert status == "downloaded"
+    assert len(opener.requests) == 2
+
+
+def test_download_item_falls_back_to_browser_request(tmp_path: Path) -> None:
+    from bb_sync.blackboard.downloader import DownloadClient, download_item
+
+    body = b"%PDF-1.7 fallback"
+    browser = _FakeRequestContext(
+        _FakeBrowserResponse(body, headers={"content-type": "application/pdf"})
+    )
+    client = DownloadClient(
+        opener=_FakeOpener(RuntimeError("流式通道不可用")),
+        retries=0,
+        backoff=0.0,
+        fallback=browser,
+    )
+
+    status, name = download_item(client, _file_item("fallback"), tmp_path, dry_run=False)
+
+    assert (status, name) == ("downloaded", "fallback.pdf")
+    assert (tmp_path / "lectures" / "fallback.pdf").read_bytes() == body
+    assert browser.calls and browser.calls[0][0] == "https://bb.cuhk.edu.cn/bbcswebdav/f"
+
+
+def test_build_index_ignores_part_files(tmp_path: Path) -> None:
+    from bb_sync.blackboard.downloader import build_index
+
+    (tmp_path / "done.pdf").write_bytes(b"x")
+    (tmp_path / "half.pdf.part").write_bytes(b"y" * 60_000)
+
+    index = build_index(tmp_path)
+
+    assert "done.pdf" in index
+    assert not any(path.name.endswith(".part") for path in index.values())

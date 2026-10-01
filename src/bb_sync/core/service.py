@@ -152,10 +152,17 @@ def sync_course(
     console.log(f"    发现 {len(uniq)} 个文件")
 
     index = downloader.build_index(course_dir)
+    client = downloader.build_client(
+        ctx,
+        fallback=ctx.request,
+        on_retry=lambda _url, attempt, exc: console.warn(
+            f"    下载重试（第 {attempt + 1} 次）: {exc}"
+        ),
+    )
     for item in uniq.values():
         try:
             status, name = downloader.download_item(
-                ctx.request, item, course_dir, options.dry_run, index
+                client, item, course_dir, options.dry_run, index
             )
         except Exception as exc:  # 单个文件失败不中断整门课
             stats.bump("failed")
