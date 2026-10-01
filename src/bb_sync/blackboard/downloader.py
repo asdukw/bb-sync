@@ -24,6 +24,7 @@ import http.client
 import mimetypes
 import os
 import re
+import ssl
 import time
 import urllib.error
 import urllib.request
@@ -231,9 +232,16 @@ def _cookie_header(cookies, url: str) -> str:
 
 
 def _is_transient(exc: BaseException) -> bool:
-    """连接超时/中断可重试；4xx 等确定性失败不重试。"""
+    """连接超时/中断可重试；TLS 握手失败、4xx 等确定性失败不重试。
+
+    ``urllib`` 会把底层 ``ssl.SSLError`` 包进 ``URLError.reason``，必须先拆一层，
+    否则「握手失败」会被误当成瞬时错误，对每个文件白重试三次。
+    """
     if isinstance(exc, urllib.error.HTTPError):
         return exc.code >= 500
+    reason = getattr(exc, "reason", None)
+    if isinstance(exc, ssl.SSLError) or isinstance(reason, ssl.SSLError):
+        return False
     return isinstance(
         exc, (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError)
     )
@@ -257,14 +265,18 @@ class DownloadClient:
         opener=None,
         user_agent: str = DEFAULT_USER_AGENT,
         on_retry=None,
+        on_degraded=None,
     ) -> None:
         self._cookies = list(cookies)
         self._opener = opener
         self._user_agent = user_agent
         self._on_retry = on_retry
+        self._on_degraded = on_degraded
         self.fallback = fallback
         self.retries = max(0, retries)
         self.backoff = max(0.0, backoff)
+        #: 流式通道失败一次后置位；本轮后续文件直接走浏览器兜底，不再反复失败/重试
+        self.degraded = False
 
     def _request(self, url: str, offset: int) -> urllib.request.Request:
         request = urllib.request.Request(url)
@@ -301,6 +313,15 @@ class DownloadClient:
         with contextlib.suppress(Exception):
             self._on_retry(url, attempt, exc)
 
+    def mark_degraded(self, exc: BaseException) -> None:
+        """流式通道失败后降级：本轮回退浏览器请求，避免每个文件重复失败。"""
+        if self.degraded:
+            return
+        self.degraded = True
+        if self._on_degraded is not None:
+            with contextlib.suppress(Exception):
+                self._on_degraded(exc)
+
 
 def build_client(
     ctx,
@@ -309,6 +330,7 @@ def build_client(
     retries: int = MAX_RETRIES,
     backoff: float = RETRY_BACKOFF,
     on_retry=None,
+    on_degraded=None,
 ) -> DownloadClient:
     """从浏览器上下文构造流式下载客户端（复用 cookie，避免重新登录）。"""
     try:
@@ -321,6 +343,7 @@ def build_client(
         retries=retries,
         backoff=backoff,
         on_retry=on_retry,
+        on_degraded=on_degraded,
     )
 
 
@@ -484,11 +507,14 @@ def download_item(
     状态取值：``downloaded`` / ``exists`` / ``would-download`` / ``empty``。
     流式通道整体失败时，若客户端带浏览器回退，则退回 Playwright 请求。
     """
+    if client.degraded and client.fallback is not None:
+        return _download_via_browser(client.fallback, item, course_dir, dry_run, index)
     try:
         return _download_streaming(client, item, course_dir, dry_run, index)
-    except Exception:
+    except Exception as exc:
         if client.fallback is None:
             raise
+        client.mark_degraded(exc)
         return _download_via_browser(client.fallback, item, course_dir, dry_run, index)
 
 

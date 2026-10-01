@@ -155,8 +155,13 @@ def sync_course(
     client = downloader.build_client(
         ctx,
         fallback=ctx.request,
-        on_retry=lambda _url, attempt, exc: console.warn(
-            f"    下载重试（第 {attempt + 1} 次）: {exc}"
+        # 重试属于瞬时抖动：只在 --verbose 下显示，不按警告刷屏
+        on_retry=lambda _url, attempt, exc: console.debug(
+            f"[download] 第 {attempt + 1} 次重试: {exc}"
+        ),
+        # 流式通道整体不可用时只提示一次，本轮后续文件直接走浏览器通道
+        on_degraded=lambda exc: console.log(
+            f"    [download] 流式通道不可用，本轮改用浏览器通道: {exc}"
         ),
     )
     for item in uniq.values():

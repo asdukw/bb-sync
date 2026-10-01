@@ -1697,3 +1697,56 @@ def test_do_login_wraps_unexpected_error_and_dumps(isolated_env: Path) -> None:
 
     assert "连接被重置" in excinfo.value.message
     assert (isolated_env / ".bb-sync" / "debug_login.html").exists()
+
+
+def test_is_transient_rejects_tls_handshake_failure() -> None:
+    """TLS 握手失败是确定性错误，不能当瞬时错误反复重试。"""
+    import ssl
+    import urllib.error
+    from email.message import Message
+
+    from bb_sync.blackboard.downloader import _is_transient
+
+    assert _is_transient(urllib.error.URLError(ssl.SSLError("handshake"))) is False
+    assert _is_transient(urllib.error.HTTPError("u", 503, "busy", Message(), None)) is True
+    assert _is_transient(urllib.error.HTTPError("u", 404, "nope", Message(), None)) is False
+    # 真正的瞬时错误（超时）仍可重试
+    assert _is_transient(TimeoutError("slow")) is True
+
+
+def test_download_item_degrades_after_streaming_failure(tmp_path: Path) -> None:
+    """流式通道失败一次后，本轮后续文件不再重试，直接走浏览器兜底。"""
+    import ssl
+    import urllib.error
+
+    from bb_sync.blackboard.downloader import DownloadClient, download_item
+
+    body = b"%PDF-1.7 fallback"
+    browser = _FakeRequestContext(
+        _FakeBrowserResponse(body, headers={"content-type": "application/pdf"})
+    )
+    retries: list[tuple] = []
+    degraded: list[BaseException] = []
+    opener = _FakeOpener(urllib.error.URLError(ssl.SSLError("handshake failure")))
+    client = DownloadClient(
+        opener=opener,
+        retries=3,
+        backoff=0.0,
+        fallback=browser,
+        on_retry=lambda *args: retries.append(args),
+        on_degraded=degraded.append,
+    )
+
+    status1, _ = download_item(client, _file_item("a"), tmp_path, dry_run=False)
+
+    assert status1 == "downloaded"
+    assert client.degraded is True
+    assert len(opener.requests) == 1  # 握手失败不重试，只发一次请求
+    assert retries == []  # 没有「重试」噪音
+    assert len(degraded) == 1  # 降级只提示一次
+
+    status2, _ = download_item(client, _file_item("b"), tmp_path, dry_run=False)
+
+    assert status2 == "downloaded"
+    assert len(opener.requests) == 1  # 已降级：后续文件跳过流式通道
+    assert len(browser.calls) == 2
