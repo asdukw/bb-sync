@@ -1,4 +1,4 @@
-"""附件下载：文件名推断、类型嗅探、增量去重、原子落盘。
+"""附件下载：文件名推断、类型嗅探、增量去重、浏览器原生流式落盘。
 
 服务器常返回 ``application/octet-stream``，且 BB 条目标题往往没有扩展名
 （就叫 "Lec 01"），所以文件名按以下优先级推断：
@@ -9,30 +9,29 @@
 
 再依次用 ``Content-Type`` → **文件头嗅探** → URL 末段后缀 补全扩展名。
 
-下载走**流式 + 原子落盘**：先读文件头用于嗅探/去重，再分块写入 ``.part``，
-成功后 ``os.replace`` 原子替换。失败/中断会保留 ``.part``，下次运行用
-``Range`` 续传——避免「半截文件被当成已存在而永久跳过」。
+下载分两步走：
 
-网络层复用 Steel 会话的 cookie，不额外登录；流式通道整体失败时回退到
-Playwright 请求上下文（旧的整块读取行为），可用性优先。
+- **探测**：``HEAD`` 廉价拿文件名与大小，先做增量去重；名字缺扩展名时才补读文件头。
+- **下载**：确实需要新文件时，用页面里的 ``<a download>`` 触发 Chrome 自身下载，
+  由浏览器把文件**直接流式写到磁盘**（不再把整个文件读进内存）。落盘统一先写
+  ``.part`` 再 ``os.replace`` 原子替换。
+
+选择浏览器通道而不是自建 HTTP 客户端的原因：下载与登录共用同一套浏览器网络栈和
+cookie，不会出现「浏览器能下、脚本直连被 TLS/代理拒绝」这类不一致（实测踩到过）。
 """
 
 from __future__ import annotations
 
 import contextlib
-import http.client
 import mimetypes
 import os
 import re
-import ssl
-import time
-import urllib.error
-import urllib.request
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote
 
-from bb_sync.blackboard.models import BASE, FileItem
+from bb_sync.blackboard.models import FileItem
 from bb_sync.blackboard.scraper import sanitize_filename
+from bb_sync.core.errors import NetworkError
 
 #: 作业编号，用于归入 ``assignments/hwN/``
 HW_NUM = re.compile(r"(?:hw|home\s*work|set|assignment)\D{0,3}(\d{1,2})", re.I)
@@ -49,21 +48,27 @@ PART_SUFFIX = ".part"
 #: 判断类型/去重所需的最少字节数（覆盖 ipynb 的 ``"cells"`` 探测窗口）
 SNIFF_BYTES = 4096
 
-#: 分块写入的块大小
-CHUNK_SIZE = 1 << 20
+#: HEAD 探测 / 嗅探文件头的超时（毫秒）
+PROBE_TIMEOUT_MS = 30_000
 
-#: 单次请求超时（秒）；流式按块计时，不受整文件大小影响
-REQUEST_TIMEOUT = 60.0
+#: 等待浏览器「开始下载」的超时（毫秒）；超时即认为浏览器通道不可用并熔断
+DOWNLOAD_START_TIMEOUT_MS = 15_000
 
-#: 连接类故障的重试次数与退避基数
-MAX_RETRIES = 3
-RETRY_BACKOFF = 1.0
+#: 兜底路线整块读取的超时（毫秒）
+BUFFERED_TIMEOUT_MS = 60_000
 
-#: 兜底 User-Agent（正常路径会尽量沿用浏览器上下文）
-DEFAULT_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-)
+#: 在页面里触发浏览器下载：同源 URL + download 属性，无论服务端是否 attachment 都会下载
+_TRIGGER_DOWNLOAD_JS = """
+(url) => {
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = '';
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+"""
 
 
 def sniff_ext(body: bytes) -> str | None:
@@ -88,7 +93,7 @@ def sniff_ext(body: bytes) -> str | None:
 
 def _name_from_disposition(headers) -> str | None:
     """从 ``Content-Disposition`` 提取文件名。"""
-    cd = headers.get("content-disposition", "")
+    cd = str(headers.get("content-disposition", "") or "")
     m = re.search(r"filename\*?=(?:UTF-8'')?\"?([^\";]+)", cd, re.I)
     return unquote(m.group(1)) if m else None
 
@@ -114,7 +119,7 @@ def _finalize_name(item: FileItem, headers, head: bytes, url: str) -> str:
         )
 
     if not Path(name).suffix or Path(name).suffix.lower() in _UNKNOWN_SUFFIXES:
-        ctype = str(headers.get("content-type", "")).split(";")[0].strip()
+        ctype = str(headers.get("content-type", "") or "").split(";")[0].strip()
         guess = _guess_extension(ctype, head, url)
         if guess:
             base = name.rsplit(".", 1)[0] if Path(name).suffix else name
@@ -123,10 +128,10 @@ def _finalize_name(item: FileItem, headers, head: bytes, url: str) -> str:
     return sanitize_filename(name)
 
 
-def resolve_name(item: FileItem, resp) -> tuple[str, bytes]:
-    """兼容旧签名（浏览器请求兜底路径）：读全量 body 后确定文件名。"""
-    body = resp.body()
-    return _finalize_name(item, resp.headers, body, item.url), body
+def _name_needs_sniff(name: str) -> bool:
+    """文件名是否还缺一个可信扩展名（需要读文件头来嗅探）。"""
+    suffix = Path(name).suffix.lower()
+    return not suffix or suffix in _UNKNOWN_SUFFIXES
 
 
 def build_index(course_dir: Path) -> dict[str, Path]:
@@ -187,18 +192,6 @@ def _content_length(headers) -> int | None:
         return None
 
 
-def _expected_total(headers, status: int) -> int | None:
-    """整段下载的预期总字节数：200 看 Content-Length，206 看 Content-Range。"""
-    if status == 206:
-        content_range = str(headers.get("content-range", ""))
-        if "/" in content_range:
-            tail = content_range.rsplit("/", 1)[-1].strip()
-            if tail.isdigit():
-                return int(tail)
-        return None
-    return _content_length(headers)
-
-
 def _category_dir(course_dir: Path, item: FileItem) -> Path:
     """条目落盘目录；作业按 hwN 归档，对齐已有目录习惯。"""
     cat_dir = course_dir / item.category
@@ -217,318 +210,139 @@ def _relpath(path: Path, course_dir: Path) -> str:
         return path.name
 
 
-def _cookie_header(cookies, url: str) -> str:
-    """只转发与目标域名匹配的 cookie，避免把登录态发给无关站点。"""
-    host = (urlparse(url).hostname or "").lower()
-    parts: list[str] = []
-    for cookie in cookies:
-        domain = str(cookie.get("domain") or "").lstrip(".").lower()
-        if domain and host and not (host == domain or host.endswith("." + domain)):
-            continue
-        name = cookie.get("name")
-        if name:
-            parts.append(f"{name}={cookie.get('value', '')}")
-    return "; ".join(parts)
+class DownloadSession:
+    """一次同步复用的下载器（浏览器原生通道 + 整块读取兜底）。
 
-
-def _is_transient(exc: BaseException) -> bool:
-    """连接超时/中断可重试；TLS 握手失败、4xx 等确定性失败不重试。
-
-    ``urllib`` 会把底层 ``ssl.SSLError`` 包进 ``URLError.reason``，必须先拆一层，
-    否则「握手失败」会被误当成瞬时错误，对每个文件白重试三次。
-    """
-    if isinstance(exc, urllib.error.HTTPError):
-        return exc.code >= 500
-    reason = getattr(exc, "reason", None)
-    if isinstance(exc, ssl.SSLError) or isinstance(reason, ssl.SSLError):
-        return False
-    return isinstance(
-        exc, (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError)
-    )
-
-
-class DownloadClient:
-    """复用浏览器登录态的流式下载客户端。
-
-    - 转发与目标域名匹配的 cookie，无需重新登录
-    - ``open`` 返回可流式读取的响应对象；连接类故障按退避重试
-    - ``fallback`` 是 Playwright 请求上下文，用作旧路径兜底
+    - ``probe`` 只用 HEAD 拿文件名/大小，命中已有文件时**完全不下载体**
+    - 需要新下载时优先用浏览器原生下载，由 Chrome 直接流式写盘
+    - 浏览器下载在本轮首次失败后熔断，后续文件直接走整块读取，不再重复等待超时
     """
 
-    def __init__(
-        self,
-        *,
-        cookies: list[dict] | tuple = (),
-        fallback=None,
-        retries: int = MAX_RETRIES,
-        backoff: float = RETRY_BACKOFF,
-        opener=None,
-        user_agent: str = DEFAULT_USER_AGENT,
-        on_retry=None,
-        on_degraded=None,
-    ) -> None:
-        self._cookies = list(cookies)
-        self._opener = opener
-        self._user_agent = user_agent
-        self._on_retry = on_retry
-        self._on_degraded = on_degraded
-        self.fallback = fallback
-        self.retries = max(0, retries)
-        self.backoff = max(0.0, backoff)
-        #: 流式通道失败一次后置位；本轮后续文件直接走浏览器兜底，不再反复失败/重试
-        self.degraded = False
+    def __init__(self, page, request_ctx) -> None:
+        self.page = page
+        self.request = request_ctx
+        self.browser_download_failed = False
 
-    def _request(self, url: str, offset: int) -> urllib.request.Request:
-        request = urllib.request.Request(url)
-        request.add_header("User-Agent", self._user_agent)
-        request.add_header("Accept", "*/*")
-        request.add_header("Referer", BASE + "/")
-        cookie = _cookie_header(self._cookies, url)
-        if cookie:
-            request.add_header("Cookie", cookie)
-        if offset:
-            request.add_header("Range", f"bytes={offset}-")
-        return request
-
-    def open(self, url: str, offset: int = 0):
-        """发起请求并返回流式响应；仅对连接类故障退避重试。"""
-        opener = self._opener or urllib.request.build_opener()
-        last_error: BaseException | None = None
-        for attempt in range(self.retries + 1):
-            try:
-                return opener.open(self._request(url, offset), timeout=REQUEST_TIMEOUT)
-            except Exception as exc:
-                last_error = exc
-                if attempt >= self.retries or not _is_transient(exc):
-                    break
-                self.notify(url, attempt, exc)
-                time.sleep(self.backoff * (2**attempt))
-        assert last_error is not None
-        raise last_error
-
-    def notify(self, url: str, attempt: int, exc: BaseException) -> None:
-        """回调「第 attempt 次重试」，用于日志；回调异常不影响下载。"""
-        if self._on_retry is None:
-            return
-        with contextlib.suppress(Exception):
-            self._on_retry(url, attempt, exc)
-
-    def mark_degraded(self, exc: BaseException) -> None:
-        """流式通道失败后降级：本轮回退浏览器请求，避免每个文件重复失败。"""
-        if self.degraded:
-            return
-        self.degraded = True
-        if self._on_degraded is not None:
-            with contextlib.suppress(Exception):
-                self._on_degraded(exc)
-
-
-def build_client(
-    ctx,
-    *,
-    fallback=None,
-    retries: int = MAX_RETRIES,
-    backoff: float = RETRY_BACKOFF,
-    on_retry=None,
-    on_degraded=None,
-) -> DownloadClient:
-    """从浏览器上下文构造流式下载客户端（复用 cookie，避免重新登录）。"""
-    try:
-        cookies = ctx.cookies()
-    except Exception:
-        cookies = []
-    return DownloadClient(
-        cookies=cookies,
-        fallback=fallback,
-        retries=retries,
-        backoff=backoff,
-        on_retry=on_retry,
-        on_degraded=on_degraded,
-    )
-
-
-def _pump(resp, part: Path, pending: bytes, mode: str) -> int:
-    """把 ``pending`` 与响应剩余内容分块写入 ``part``，返回写入后的文件大小。"""
-    with open(part, mode) as handle:
-        if pending:
-            handle.write(pending)
-        while True:
-            chunk = resp.read(CHUNK_SIZE)
-            if not chunk:
-                break
-            handle.write(chunk)
-    return part.stat().st_size
-
-
-def _download_stream(client, url, target, *, first_resp, first_bytes) -> int:
-    """把响应流写入 ``.part`` 后原子替换；失败保留 ``.part`` 供下次续传。"""
-    part = target.with_name(target.name + PART_SUFFIX)
-    part.parent.mkdir(parents=True, exist_ok=True)
-
-    resp = first_resp
-    pending = first_bytes
-    # 已有未完成的 .part：探测响应只用于取名，这里改为带 Range 续传
-    if part.exists() and part.stat().st_size > 0:
-        with contextlib.suppress(Exception):
-            resp.close()
-        resp = None
-        pending = b""
-
-    last_error: BaseException | None = None
-
-    for attempt in range(client.retries + 1):
+    def probe(self, item: FileItem) -> tuple[str, int | None]:
+        """探测文件名与大小：HEAD 优先，名字缺扩展名时才补读文件头。"""
+        headers: dict = {}
         try:
-            if resp is None:
-                offset = part.stat().st_size if part.exists() else 0
-                resp = client.open(url, offset=offset)
-                status = int(getattr(resp, "status", 200))
-                mode = "ab" if offset and status == 206 else "wb"
-                pending = b""
-            else:
-                status = int(getattr(resp, "status", 200))
-                mode = "wb"
-            expected = _expected_total(getattr(resp, "headers", {}), status)
-            written = _pump(resp, part, pending, mode)
-            if expected is not None and written != expected:
-                raise OSError(f"下载不完整：预期 {expected} 字节，实际 {written} 字节")
-            with contextlib.suppress(Exception):
-                resp.close()
-            os.replace(part, target)
-            return written
-        except Exception as exc:
-            last_error = exc
-            with contextlib.suppress(Exception):
-                if resp is not None:
-                    resp.close()
-            resp = None
-            pending = b""
-            if attempt >= client.retries or not _is_transient(exc):
-                break
-            client.notify(url, attempt, exc)
-            time.sleep(client.backoff * (2**attempt))
+            resp = self.request.fetch(item.url, method="HEAD", timeout=PROBE_TIMEOUT_MS)
+            if resp.status < 400:
+                headers = dict(resp.headers)
+        except Exception:
+            headers = {}
 
-    assert last_error is not None
-    raise last_error
-
-
-def _atomic_write(target: Path, data: bytes) -> None:
-    """整块数据的原子写入（仅兜底路径使用）。"""
-    part = target.with_name(target.name + PART_SUFFIX)
-    part.parent.mkdir(parents=True, exist_ok=True)
-    part.write_bytes(data)
-    os.replace(part, target)
-
-
-def _download_streaming(
-    client: DownloadClient,
-    item: FileItem,
-    course_dir: Path,
-    dry_run: bool,
-    index: dict[str, Path] | None,
-) -> tuple[str, str]:
-    """流式主路径：只读文件头即可判断名称/去重，dry-run 不落盘。"""
-    cat_dir = _category_dir(course_dir, item)
-    resp = client.open(item.url)
-    try:
-        head = resp.read(SNIFF_BYTES)
-        headers = getattr(resp, "headers", {})
+        head = b""
         name = _finalize_name(item, headers, head, item.url)
-        size = _content_length(headers)
-    except Exception:
-        with contextlib.suppress(Exception):
-            resp.close()
-        raise
+        if _name_needs_sniff(name):
+            head = self._peek_head(item.url)
+            if head:
+                name = _finalize_name(item, headers, head, item.url)
+        return name, _content_length(headers)
 
-    already = _index_match(index, name, size)
-    if already is not None:
-        with contextlib.suppress(Exception):
-            resp.close()
-        return ("exists", _relpath(already, course_dir))
+    def _peek_head(self, url: str) -> bytes:
+        """读取文件头用于嗅探；服务端支持 Range 时只取几 KB。"""
+        try:
+            resp = self.request.get(
+                url, headers={"Range": f"bytes=0-{SNIFF_BYTES - 1}"}, timeout=PROBE_TIMEOUT_MS
+            )
+            return resp.body()[:SNIFF_BYTES]
+        except Exception:
+            return b""
 
-    target = cat_dir / name
-    if target.exists():
-        with contextlib.suppress(Exception):
-            resp.close()
-        return ("exists", target.name)
+    def download_item(
+        self,
+        item: FileItem,
+        course_dir: Path,
+        dry_run: bool,
+        index: dict[str, Path] | None = None,
+    ) -> tuple[str, str]:
+        """下载单个条目，返回 ``(状态, 名称)``。
 
-    if dry_run:
-        with contextlib.suppress(Exception):
-            resp.close()
-        return ("would-download", name)
+        状态取值：``downloaded`` / ``exists`` / ``would-download`` / ``empty``。
+        """
+        cat_dir = _category_dir(course_dir, item)
+        name, size = self.probe(item)
 
-    if not head and (size is None or size == 0):
-        with contextlib.suppress(Exception):
-            resp.close()
-        return ("empty", name)
+        already = _index_match(index, name, size)
+        if already is not None:
+            return ("exists", _relpath(already, course_dir))
+        target = cat_dir / name
+        if target.exists():
+            return ("exists", target.name)
+        if dry_run:
+            return ("would-download", name)
+        if size == 0:
+            return ("empty", name)
 
-    written = _download_stream(client, item.url, target, first_resp=resp, first_bytes=head)
-    _remember(index, name, target, written)
-    return ("downloaded", name)
+        part = target.with_name(target.name + PART_SUFFIX)
+        part.parent.mkdir(parents=True, exist_ok=True)
+        with contextlib.suppress(OSError):
+            part.unlink()
 
+        if not self._fetch_body(item.url, part):
+            raise NetworkError(f"下载失败：{name}", "检查网络或登录态后重试 bb-sync run")
 
-def _download_via_browser(
-    request_ctx,
-    item: FileItem,
-    course_dir: Path,
-    dry_run: bool,
-    index: dict[str, Path] | None,
-) -> tuple[str, str]:
-    """兜底路径：沿用 Playwright 请求上下文，整块读取后原子落盘。"""
-    cat_dir = _category_dir(course_dir, item)
-    resp = request_ctx.get(item.url, timeout=60000)
-    name, body = resolve_name(item, resp)
+        written = part.stat().st_size
+        if written == 0:
+            with contextlib.suppress(OSError):
+                part.unlink()
+            return ("empty", name)
+        if size is not None and written != size:
+            with contextlib.suppress(OSError):
+                part.unlink()
+            raise NetworkError(
+                f"下载不完整：{name}（预期 {size} 字节，实际 {written} 字节）",
+                "文件未落盘，重试 bb-sync run 即可",
+            )
 
-    already = _index_match(index, name, len(body))
-    if already is not None:
-        return ("exists", _relpath(already, course_dir))
+        os.replace(part, target)
+        _remember(index, name, target, written)
+        return ("downloaded", name)
 
-    target = cat_dir / name
-    if target.exists():
-        return ("exists", target.name)
-    if dry_run:
-        return ("would-download", name)
-    if not body:
-        return ("empty", name)
+    def _fetch_body(self, url: str, part: Path) -> bool:
+        """取回文件体：优先浏览器原生下载，失败后本轮改用整块读取。"""
+        if not self.browser_download_failed:
+            if self._try_browser_download(url, part):
+                return True
+            self.browser_download_failed = True
+        return self._try_buffered(url, part)
 
-    _atomic_write(target, body)
-    _remember(index, name, target, len(body))
-    return ("downloaded", name)
+    def _try_browser_download(self, url: str, part: Path) -> bool:
+        """用页面里的 ``<a download>`` 触发浏览器下载，由 Chrome 流式写盘。"""
+        try:
+            with self.page.expect_download(timeout=DOWNLOAD_START_TIMEOUT_MS) as info:
+                self.page.evaluate(_TRIGGER_DOWNLOAD_JS, url)
+            download = info.value
+            download.save_as(str(part))
+            if download.failure() or not part.exists():
+                raise OSError("浏览器下载未完成")
+            return True
+        except Exception:
+            with contextlib.suppress(OSError):
+                part.unlink()
+            return False
 
-
-def download_item(
-    client: DownloadClient,
-    item: FileItem,
-    course_dir: Path,
-    dry_run: bool,
-    index: dict[str, Path] | None = None,
-) -> tuple[str, str]:
-    """下载单个条目，返回 ``(状态, 名称)``。
-
-    状态取值：``downloaded`` / ``exists`` / ``would-download`` / ``empty``。
-    流式通道整体失败时，若客户端带浏览器回退，则退回 Playwright 请求。
-    """
-    if client.degraded and client.fallback is not None:
-        return _download_via_browser(client.fallback, item, course_dir, dry_run, index)
-    try:
-        return _download_streaming(client, item, course_dir, dry_run, index)
-    except Exception as exc:
-        if client.fallback is None:
-            raise
-        client.mark_degraded(exc)
-        return _download_via_browser(client.fallback, item, course_dir, dry_run, index)
+    def _try_buffered(self, url: str, part: Path) -> bool:
+        """兜底：用请求上下文整块读取后写盘。"""
+        try:
+            resp = self.request.get(url, timeout=BUFFERED_TIMEOUT_MS)
+            part.write_bytes(resp.body())
+        except Exception:
+            return False
+        return True
 
 
 __all__ = [
-    "CHUNK_SIZE",
-    "DownloadClient",
+    "BUFFERED_TIMEOUT_MS",
+    "DOWNLOAD_START_TIMEOUT_MS",
+    "DownloadSession",
     "HW_NUM",
-    "MAX_RETRIES",
     "PART_SUFFIX",
+    "PROBE_TIMEOUT_MS",
     "SIZE_DEDUP_THRESHOLD",
     "SNIFF_BYTES",
-    "build_client",
     "build_index",
-    "download_item",
-    "resolve_name",
     "sniff_ext",
 ]

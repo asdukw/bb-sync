@@ -117,12 +117,12 @@ def folder_name(course: Course, explicit_dirs: dict[str, str]) -> str:
 
 
 def sync_course(
-    ctx,
     page,
     course: Course,
     course_dir: Path,
     options: SyncOptions,
     stats: SyncStats,
+    downloads: downloader.DownloadSession,
 ) -> None:
     """同步单门课程：公告 → 内容区 → 逐文件下载。"""
     console = options.console
@@ -152,23 +152,9 @@ def sync_course(
     console.log(f"    发现 {len(uniq)} 个文件")
 
     index = downloader.build_index(course_dir)
-    client = downloader.build_client(
-        ctx,
-        fallback=ctx.request,
-        # 重试属于瞬时抖动：只在 --verbose 下显示，不按警告刷屏
-        on_retry=lambda _url, attempt, exc: console.debug(
-            f"[download] 第 {attempt + 1} 次重试: {exc}"
-        ),
-        # 流式通道整体不可用时只提示一次，本轮后续文件直接走浏览器通道
-        on_degraded=lambda exc: console.log(
-            f"    [download] 流式通道不可用，本轮改用浏览器通道: {exc}"
-        ),
-    )
     for item in uniq.values():
         try:
-            status, name = downloader.download_item(
-                client, item, course_dir, options.dry_run, index
-            )
+            status, name = downloads.download_item(item, course_dir, options.dry_run, index)
         except Exception as exc:  # 单个文件失败不中断整门课
             stats.bump("failed")
             console.warn(f"    [{item.category}] 下载失败: {exc}")
@@ -257,9 +243,10 @@ def run_sync(options: SyncOptions) -> SyncStats:
                 course.slug = folder_name(course, explicit_dirs)
             _print_plan(console, courses, options.root, options.dry_run)
 
+            downloads = downloader.DownloadSession(page, ctx.request)
             for course in courses:
                 stats.courses.append(course.code or course.title)
-                sync_course(ctx, page, course, options.root / course.slug, options, stats)
+                sync_course(page, course, options.root / course.slug, options, stats, downloads)
 
             due_items, due_failed = _scan_due_items(page, courses, console)
             due_path = options.root / "due.md"
