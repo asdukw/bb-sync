@@ -7,7 +7,9 @@ Blackboard 的登录按钮跳到 ADFS（STS）OAuth2；ADFS 登录页是**分页
 
 from __future__ import annotations
 
+import contextlib
 import getpass
+from pathlib import Path
 
 from playwright.sync_api import Page
 from playwright.sync_api import TimeoutError as PWTimeout
@@ -45,8 +47,48 @@ def is_logged_in(page: Page) -> bool:
         return False
 
 
+def _safe_url(page: Page) -> str:
+    """取当前 URL；页面已关闭等情况下退回占位文本，保证报错本身不二次失败。"""
+    try:
+        return page.url
+    except Exception:
+        return "(URL 不可用)"
+
+
+def _dump_login_debug(page: Page) -> Path:
+    """保存登录失败现场（截图 + 页面源码），返回产物目录；写盘失败不中断报错。"""
+    home = paths.BB_SYNC_HOME
+    with contextlib.suppress(OSError):
+        home.mkdir(parents=True, exist_ok=True)
+    with contextlib.suppress(Exception):
+        page.screenshot(path=str(home / "debug_login.png"), full_page=True, timeout=5000)
+    with contextlib.suppress(Exception):
+        (home / "debug_login.html").write_text(page.content(), encoding="utf-8")
+    return home
+
+
 def do_login(page: Page, username: str, password: str) -> None:
-    """执行一次完整登录；失败时保存调试产物并抛 :class:`AuthError`。"""
+    """执行一次完整登录；**任何一步**失败都保存调试产物并抛 :class:`AuthError`。
+
+    登录链路上每一步都可能因站点改版、MFA、网络或选择器漂移而卡住。这里统一兜底：
+    把当前 URL 写进错误信息，并落一份截图 + HTML，避免退化成「未预期错误 + 堆栈」
+    这种既没有可操作提示、又没有现场可查的形态。
+    """
+    try:
+        _perform_login(page, username, password)
+    except Exception as exc:
+        home = _dump_login_debug(page)
+        detail = str(exc).strip() or exc.__class__.__name__
+        raise AuthError(
+            f"登录失败（当前 URL: {_safe_url(page)}）：{detail}",
+            f"已保存登录现场到 {home}（debug_login.png / debug_login.html）。"
+            "若页面停在 ADFS / MFA / 验证码，请用 bb-sync run --headed 手动完成；"
+            "若是登录页改版导致选择器失效，请把 debug_login.html 反馈给开发者。",
+        ) from exc
+
+
+def _perform_login(page: Page, username: str, password: str) -> None:
+    """实际登录流程（由 :func:`do_login` 统一兜底与落现场）。"""
     page.goto(LOGIN_URL, wait_until="domcontentloaded")
     # 主按钮跳转 ADFS OAuth2
     page.wait_for_selector("input[name='login'], #login input.submit", timeout=10000)
@@ -79,21 +121,8 @@ def do_login(page: Page, username: str, password: str) -> None:
         if "bb.cuhk.edu.cn" in page.url and "adfs" not in page.url and "sts." not in page.url:
             break
 
-    if is_logged_in(page):
-        return
-
-    # 失败：落调试产物，便于排查选择器漂移
-    home = paths.BB_SYNC_HOME
-    debug_png = home / "debug_login.png"
-    debug_html = home / "debug_login.html"
-    home.mkdir(parents=True, exist_ok=True)
-    page.screenshot(path=str(debug_png), full_page=True)
-    debug_html.write_text(page.content(), encoding="utf-8")
-    raise AuthError(
-        f"登录失败（当前 URL: {page.url}）",
-        f"已保存截图与页面源码到 {home}；请检查凭据（bb-sync auth login 可重新录入），"
-        "或运行 bb-sync run --headed 手动完成 MFA",
-    )
+    if not is_logged_in(page):
+        raise AuthError("已填写凭据，但未回到 Blackboard（可能是账号/密码错误，或需要 MFA）")
 
 
 def prompt_credentials(console: Console) -> Credentials:

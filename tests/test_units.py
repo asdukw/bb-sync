@@ -1612,3 +1612,88 @@ def test_wait_for_content_missing_selector_does_not_wait_twice() -> None:
 
     # 选择器未出现时 wait_for_selector 已耗尽 timeout，不能再叠加第二次等待
     assert [call[0] for call in page.calls] == ["selector"]
+
+
+# ---------------------------------------------------------------- 登录失败兜底
+
+
+class _NullNavigation:
+    """``page.expect_navigation(...)`` 的上下文替身。"""
+
+    def __enter__(self):
+        return None
+
+    def __exit__(self, *exc_info) -> bool:
+        return False
+
+
+class _FakeLoginPage:
+    """登录流程的假 Page，只覆盖 ``do_login`` 会触达的接口。
+
+    模拟真实失败：登录页主按钮存在，点「登录」后跳到 ADFS，但账号输入框不出现。
+    """
+
+    ADFS_URL = "https://adfs.cuhk.edu.cn/adfs/ls/"
+
+    def __init__(self, *, url: str = "https://bb.cuhk.edu.cn/webapps/login/") -> None:
+        self.url = url
+        self.goto_error: Exception | None = None
+        self.screenshots: list[str] = []
+
+    def goto(self, url: str, **kwargs):
+        if self.goto_error is not None:
+            raise self.goto_error
+        self.url = url
+        return None
+
+    def wait_for_selector(self, selector: str, timeout=None, state=None):
+        # 登录页主按钮存在；点「登录」后跳 ADFS，但账号输入框始终不出现
+        if "input[name='login']" in selector:
+            return None
+        from playwright.sync_api import TimeoutError as PWTimeout
+
+        raise PWTimeout(f"waiting for {selector}")
+
+    def expect_navigation(self, **kwargs) -> _NullNavigation:
+        return _NullNavigation()
+
+    def click(self, selector: str, **kwargs) -> None:
+        self.url = self.ADFS_URL
+
+    def screenshot(self, path=None, full_page=False, timeout=None):
+        if path:
+            Path(path).write_bytes(b"PNG")
+            self.screenshots.append(path)
+
+    def content(self) -> str:
+        return "<html><body>login page</body></html>"
+
+
+def test_do_login_timeout_becomes_auth_error_with_artifacts(isolated_env: Path) -> None:
+    """选择器超时必须转成退出码 3 的 AuthError，并落截图/HTML，而不是未预期错误。"""
+    from bb_sync.blackboard.login import do_login
+    from bb_sync.core.errors import AuthError
+
+    page = _FakeLoginPage(url="https://adfs.cuhk.edu.cn/adfs/ls/")
+    with pytest.raises(AuthError) as excinfo:
+        do_login(page, "s123", "pw")  # type: ignore[arg-type]
+
+    error = excinfo.value
+    assert int(error.exit_code) == 3
+    assert _FakeLoginPage.ADFS_URL in error.message
+    home = isolated_env / ".bb-sync"
+    assert (home / "debug_login.png").read_bytes() == b"PNG"
+    assert "login page" in (home / "debug_login.html").read_text(encoding="utf-8")
+
+
+def test_do_login_wraps_unexpected_error_and_dumps(isolated_env: Path) -> None:
+    from bb_sync.blackboard.login import do_login
+    from bb_sync.core.errors import AuthError
+
+    page = _FakeLoginPage()
+    page.goto_error = RuntimeError("连接被重置")
+    with pytest.raises(AuthError) as excinfo:
+        do_login(page, "s123", "pw")  # type: ignore[arg-type]
+
+    assert "连接被重置" in excinfo.value.message
+    assert (isolated_env / ".bb-sync" / "debug_login.html").exists()
