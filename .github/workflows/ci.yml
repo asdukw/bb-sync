@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -100,4 +100,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: All platform checks passed
-        run: echo "Ubuntu and macOS quality checks passed"
+        run: echo "Ubuntu, macOS and Windows quality checks passed"

@@ -124,7 +124,7 @@ Steel 安装目录只能是 `BB_SYNC_HOME/.steel`，任何情况下不读写用�
   新增 help 逻辑时不要触发真实导入。
 - `bb-sync doctor` 的诊断输出走 stderr，stdout 只留给 `--json`；断言输出时先确认通道。
 - GitHub Actions 的 run 默认 `set -e`，断言非零退出码需用 `|| true` 兜住（见 `ci.yml` 注释）。
-- Windows 与 macOS 是主要目标平台，CI 同时跑 Ubuntu 与 macOS；路径、后台进程和
+- Windows 与 macOS 是主要目标平台，CI 同时跑 Ubuntu、macOS 与 Windows；路径、后台进程和
   浏览器探测相关改动两个平台都要考虑。
 - 首次准备 Steel 需从 GitHub / npm 拉依赖，国内网络慢时可临时用代理或镜像，不要写永久全局配置。
 - 下载目录默认 `~/courses`，课程资料有版权；禁止提交或外传 `courses/`、`.workbuddy/` 内容。
