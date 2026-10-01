@@ -13,6 +13,8 @@ Blackboard 经典版的几个关键事实（实测结论，勿轻易改动）:
 from __future__ import annotations
 
 import re
+import time
+from contextlib import suppress
 from datetime import date, datetime
 from pathlib import Path
 
@@ -100,12 +102,33 @@ def make_slug(course: Course) -> str:
 # ---------------------------------------------------------------- 页面抓取
 
 
+def _wait_for_content(page: Page, selector: str, timeout_ms: int, *, settle_ms: int = 300) -> None:
+    """等待关键内容渲染，最多不超过原来的固定等待时间。
+
+    原实现用固定 ``wait_for_timeout`` 盲等：快页面浪费时间，慢页面又可能不够。
+    改为等目标选择器出现，再等网络空闲以排除「只渲染了一半」的窗口；选择器未出现（空列表等）
+    时等满 ``timeout_ms`` 后继续，与原来的固定等待等价，不会更慢。
+    """
+    deadline = time.monotonic() + timeout_ms / 1000
+    try:
+        page.wait_for_selector(selector, timeout=timeout_ms, state="attached")
+    except PWTimeout:
+        return
+    remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+    if remaining_ms:
+        with suppress(PWTimeout):
+            page.wait_for_load_state("networkidle", timeout=remaining_ms)
+    remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+    if remaining_ms:
+        page.wait_for_timeout(min(settle_ms, remaining_ms))
+
+
 def _course_links(page: Page, console: Console) -> list[tuple[str, str]]:
     """从「My Courses」取课程链接：优先 My Courses 标签页，再退回首标签页。"""
     for url in (_PORTAL_COURSES, _PORTAL_HOME):
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(3500)
+            _wait_for_content(page, "a[href*='launcher?type=Course']", 3500)
             pairs = page.eval_on_selector_all(
                 "a[href*='launcher?type=Course']",
                 "els => els.map(e => [e.href, (e.innerText || '').trim()])",
@@ -151,7 +174,7 @@ def collect_menu_links(page: Page, course: Course) -> list[tuple[str, str]]:
         wait_until="domcontentloaded",
         timeout=30000,
     )
-    page.wait_for_timeout(2500)
+    _wait_for_content(page, "a[href*='listContent.jsp']", 2500)
     pairs = page.eval_on_selector_all(
         "a[href*='listContent.jsp']", "els => els.map(e => [e.href, (e.innerText || '').trim()])"
     )
@@ -237,7 +260,7 @@ def find_files(
     visited.add(url)
     try:
         resp = page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        page.wait_for_timeout(1000)
+        _wait_for_content(page, "a[href*='bbcswebdav']", 1000)
         if resp and resp.status >= 400:
             return []
     except PWTimeout:
@@ -281,7 +304,7 @@ def scrape_due_items(page: Page, course: Course, console: Console) -> list[DueIt
     """抓取课程主页 To Do 模块中的逾期与待办项目。"""
     home_url = f"{BASE}/webapps/blackboard/execute/launcher?type=Course&id={course.bb_id}"
     resp = page.goto(home_url, wait_until="domcontentloaded", timeout=30000)
-    page.wait_for_timeout(1200)
+    _wait_for_content(page, "#pastDueView li, #dueView li", 1200)
     if resp and resp.status >= 400:
         raise RuntimeError(f"课程主页返回 HTTP {resp.status}")
 
@@ -340,7 +363,7 @@ def scrape_announcements(
             wait_until="domcontentloaded",
             timeout=20000,
         )
-        page.wait_for_timeout(1000)
+        _wait_for_content(page, "#announcementList > li", 1000)
         # 经典版公告页的 li 本身没有 announcement class；唯一可靠的容器是列表本身。
         entries: list[dict[str, str]] = page.eval_on_selector_all(
             "#announcementList > li",

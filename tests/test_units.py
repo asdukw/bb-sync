@@ -782,8 +782,16 @@ def test_scrape_due_items_extracts_only_leaf_rows() -> None:
             assert "id=_18482_1" in url
             return None
 
+        def wait_for_selector(
+            self, selector: str, timeout: int | None = None, state: str | None = None
+        ) -> None:
+            assert selector == "#pastDueView li, #dueView li"
+
+        def wait_for_load_state(self, state: str | None = None, timeout: int | None = None) -> None:
+            return None
+
         def wait_for_timeout(self, timeout: int) -> None:
-            assert timeout == 1200
+            assert timeout <= 300
 
         def eval_on_selector_all(self, selector: str, script: str):
             assert selector == "#pastDueView li, #dueView li"
@@ -806,8 +814,16 @@ def test_scrape_announcements_keeps_distinct_titles_and_bodies(tmp_path: Path) -
             assert "course_id=_18443_1" in url
             return None
 
+        def wait_for_selector(
+            self, selector: str, timeout: int | None = None, state: str | None = None
+        ) -> None:
+            assert selector == "#announcementList > li"
+
+        def wait_for_load_state(self, state: str | None = None, timeout: int | None = None) -> None:
+            return None
+
         def wait_for_timeout(self, timeout: int) -> None:
-            assert timeout == 1000
+            assert timeout <= 300
 
         def eval_on_selector_all(self, selector: str, script: str):
             assert selector == "#announcementList > li"
@@ -1548,3 +1564,51 @@ def test_build_index_ignores_part_files(tmp_path: Path) -> None:
 
     assert "done.pdf" in index
     assert not any(path.name.endswith(".part") for path in index.values())
+
+
+# ---------------------------------------------------------------- 等待策略
+
+
+class _FakeWaitPage:
+    """只实现 ``_wait_for_content`` 会用到的三个方法，并记录调用顺序。"""
+
+    def __init__(self, *, has_selector: bool = True) -> None:
+        self.calls: list[tuple] = []
+        self._has_selector = has_selector
+
+    def wait_for_selector(self, selector, timeout=None, state=None):
+        self.calls.append(("selector", selector, timeout, state))
+        if not self._has_selector:
+            from playwright.sync_api import TimeoutError as PWTimeout
+
+            raise PWTimeout("not found")
+
+    def wait_for_load_state(self, state=None, timeout=None):
+        self.calls.append(("load_state", state, timeout))
+
+    def wait_for_timeout(self, ms):
+        self.calls.append(("settle", ms))
+
+
+def test_wait_for_content_settles_after_selector() -> None:
+    from bb_sync.blackboard.scraper import _wait_for_content
+
+    page = _FakeWaitPage()
+    _wait_for_content(page, "a.x", 3500)  # type: ignore[arg-type]
+
+    kinds = [call[0] for call in page.calls]
+    assert kinds == ["selector", "load_state", "settle"]
+    assert page.calls[0][2] == 3500  # 关键元素等待上限 = 原来的固定等待
+    assert page.calls[1][1] == "networkidle"
+    assert 0 <= page.calls[1][2] <= 3500  # 网络空闲等待不超过剩余预算
+    assert 0 <= page.calls[2][1] <= 300  # settle 不超过剩余预算
+
+
+def test_wait_for_content_missing_selector_does_not_wait_twice() -> None:
+    from bb_sync.blackboard.scraper import _wait_for_content
+
+    page = _FakeWaitPage(has_selector=False)
+    _wait_for_content(page, "a.x", 1000)  # type: ignore[arg-type]
+
+    # 选择器未出现时 wait_for_selector 已耗尽 timeout，不能再叠加第二次等待
+    assert [call[0] for call in page.calls] == ["selector"]
