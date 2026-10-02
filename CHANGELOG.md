@@ -12,6 +12,11 @@
 - `bb-sync --json due` 的 `items` 新增 `kind` 字段（`task` / `quiz`），统计新增
   `announcement_failed`；公告抓取失败不影响 To Do 待办，单独提示。
 
+### 改进
+
+- 类型检查门禁从 pyright `basic` 提升到 `standard`（当前代码库零报错）：覆盖更多潜在
+  类型问题，且与 VS Code + Pylance 读取同一份 `[tool.pyright]` 配置，编辑器与 CI 保持一致。
+
 ### 测试
 
 - 新增公告测验提取测试：常见日期格式（`Oct.13`、`13 November 2026`、中文日期等）、

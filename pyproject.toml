@@ -71,5 +71,6 @@ known-first-party = ["bb_sync"]
 [tool.pyright]
 include = ["src", "scripts", "tests"]
 exclude = ["courses", ".steel", ".venv", ".workbuddy", ".browser-profile"]
-typeCheckingMode = "basic"
+# standard 介于 basic 与 strict 之间；当前代码库零报错，比 basic 覆盖更多潜在问题。
+typeCheckingMode = "standard"
 pythonVersion = "3.11"

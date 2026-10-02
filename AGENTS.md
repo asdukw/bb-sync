@@ -106,7 +106,7 @@ Steel 安装目录只能是 `BB_SYNC_HOME/.steel`，任何情况下不读写用�
 
 ## 代码风格
 
-- ruff（line-length 100、py311、isort 的 first-party 为 `bb_sync`）+ ruff format；pyright basic 零报错。
+- ruff（line-length 100、py311、isort 的 first-party 为 `bb_sync`）+ ruff format；pyright standard 零报错。
 - 注释 / docstring 用中文解释职责与「为什么」；模块 docstring 说明关键约束。
 - 全面类型标注，模块头用 `from __future__ import annotations`；面向用户的错误信息要带可操作 hint。
 
