@@ -49,7 +49,7 @@ class FileItem:
 
 @dataclass(frozen=True)
 class DueItem:
-    """课程主页 Due / To Do 模块中的一项任务。"""
+    """一项待办：课程主页 Due / To Do 任务，或从公告整理出的课堂测验。"""
 
     course_id: str
     course_code: str
@@ -57,6 +57,7 @@ class DueItem:
     title: str
     due_date: date | None
     due_text: str = ""
+    kind: str = "task"  # task = To Do 模块；quiz = 公告里的课堂测验
 
     @property
     def course_label(self) -> str:
@@ -71,6 +72,7 @@ class DueItem:
             "title": self.title,
             "due_date": self.due_date.isoformat() if self.due_date else None,
             "due_text": self.due_text,
+            "kind": self.kind,
         }
 
 
@@ -107,7 +109,8 @@ class DueStats:
 
     path: str = ""
     items: list[DueItem] = field(default_factory=list)
-    failed: int = 0
+    failed: int = 0  # Due / To Do 模块抓取失败的课程数
+    announcement_failed: int = 0  # 公告抓取失败的课程数
     courses: list[str] = field(default_factory=list)
 
     @property
@@ -119,6 +122,7 @@ class DueStats:
             "path": self.path,
             "total": self.total,
             "failed": self.failed,
+            "announcement_failed": self.announcement_failed,
             "courses": self.courses,
             "items": [item.as_dict() for item in self.items],
         }

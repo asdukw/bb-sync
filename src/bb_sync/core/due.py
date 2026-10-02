@@ -20,6 +20,14 @@ _BUCKET_LABELS = {
     "unknown": "日期未知",
 }
 
+#: 非普通任务的待办类型标签（来自公告的课堂测验等）。
+_KIND_LABELS = {"quiz": "测验"}
+
+
+def kind_label(kind: str) -> str:
+    """返回待办类型的中文标签；普通任务返回空串。"""
+    return _KIND_LABELS.get(kind, "")
+
 
 def _bucket(item: DueItem, today: date) -> str:
     """按剩余时间归类；无法解析日期的任务放最后，避免被误判成低优先级。"""
@@ -86,12 +94,15 @@ def build_due_markdown(
     for bucket_items in grouped.values():
         bucket_items.sort(key=_sort_key)
 
+    quiz_count = sum(1 for item in items if item.kind == "quiz")
     lines = [
         "# Blackboard 待办",
         "",
         f"> 更新时间：{generated.strftime('%Y-%m-%d %H:%M')}（本地时间）",
         f"> 已检查 {len(courses)} 门课程，发现 {len(items)} 项待办；按优先级和截止日期排列。",
     ]
+    if quiz_count:
+        lines.append(f"> 其中 {quiz_count} 项是公告里的课堂测验，已一并作为待办列出。")
     if failed:
         lines.append(f"> 注意：{failed} 门课程抓取失败，结果可能不完整。")
     lines.append("")
@@ -114,10 +125,12 @@ def build_due_markdown(
             course_url = (
                 f"{BASE}/webapps/blackboard/execute/launcher?type=Course&id={item.course_id}"
             )
+            label = kind_label(item.kind)
+            badge = f"【{label}】" if label else ""
             lines.append(
                 f"- **{due}**（{_relative_due(item, day)}） — "
                 f"[{_escape_markdown(item.course_label)}]({course_url}) — "
-                f"{_escape_markdown(item.title)}"
+                f"{badge}{_escape_markdown(item.title)}"
             )
         lines.append("")
     return "\n".join(lines)
@@ -147,4 +160,4 @@ def write_due_markdown(
     return path
 
 
-__all__ = ["build_due_markdown", "sort_due_items", "write_due_markdown"]
+__all__ = ["build_due_markdown", "kind_label", "sort_due_items", "write_due_markdown"]

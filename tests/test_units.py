@@ -804,6 +804,87 @@ def test_scrape_due_items_extracts_only_leaf_rows() -> None:
     assert [item.title for item in items] == ["Homework 1"]
 
 
+def test_parse_announcement_date_supports_common_formats() -> None:
+    from datetime import date
+
+    from bb_sync.blackboard.scraper import parse_announcement_date
+
+    reference = date(2026, 9, 29)
+    assert parse_announcement_date(
+        "scheduled for Tuesday, October 13, 2026", reference=reference
+    ) == date(2026, 10, 13)
+    assert parse_announcement_date("moved to Oct.13", reference=reference) == date(2026, 10, 13)
+    assert parse_announcement_date("on 13 November 2026", reference=reference) == date(2026, 11, 13)
+    assert parse_announcement_date("2026年10月13日 9:00", reference=reference) == date(2026, 10, 13)
+    assert parse_announcement_date("Due 10/13/26", reference=reference) == date(2026, 10, 13)
+    assert parse_announcement_date("no date here", reference=reference) is None
+    assert parse_announcement_date("Due 13/40/26", reference=reference) is None
+
+
+def test_parse_announcement_quiz_items_keeps_only_dated_quiz() -> None:
+    """只收录带未来日期的测验：资料/回顾类公告不能变成待办。"""
+    from bb_sync.blackboard.models import Course
+    from bb_sync.blackboard.scraper import parse_announcement_quiz_items
+
+    course = Course(bb_id="_18482_1", title="MDS5020:Data Mining_L01")
+    entries = [
+        {
+            "title": "In-Class Quiz-1 (Oct.13)",
+            "posted_on": "Posted on: Tuesday, September 29, 2026 5:02:06 PM CST",
+            "body_markdown": (
+                "Dear Students,\n\n"
+                "In-Class Quiz-1 is scheduled for **Tuesday, Octorber 13, 2026**.\n\n"
+                "Please note that after the quiz ends at 9:20, return to the classroom."
+            ),
+        },
+        {
+            "title": "Week 4 Materials Uploaded",
+            "posted_on": "Posted on: Tuesday, September 29, 2026 9:02:16 AM CST",
+            "body_markdown": (
+                "The submission of the Assignment 1 deadline to **11:59 PM on October 11**, "
+                "and review the questions in **coding_quiz-1.zip on**Blackboard."
+            ),
+        },
+        {
+            "title": "Quiz 3 details",
+            "posted_on": "Posted on: Monday, October 5, 2026 10:00:00 AM CST",
+            "body_markdown": "The date will be announced later.",
+        },
+        {
+            "title": "Quiz 1 Recap",
+            "posted_on": "Posted on: Tuesday, October 20, 2026 10:00:00 AM CST",
+            "body_markdown": "The quiz was held on October 13 and went well.",
+        },
+    ]
+
+    items = parse_announcement_quiz_items(entries, course)
+
+    assert len(items) == 1
+    assert items[0].kind == "quiz"
+    assert items[0].title == "In-Class Quiz-1 (Oct.13)"
+    assert items[0].course_code == "MDS5020"
+    assert items[0].due_date is not None
+    assert items[0].due_date.isoformat() == "2026-10-13"
+
+
+def test_parse_announcement_quiz_items_infers_year_across_term_boundary() -> None:
+    from bb_sync.blackboard.models import Course
+    from bb_sync.blackboard.scraper import parse_announcement_quiz_items
+
+    course = Course(bb_id="_1_1", title="MDS5020:Data Mining_L01")
+    entries = [
+        {
+            "title": "Quiz 2 Details",
+            "posted_on": "Posted on: Monday, December 7, 2026 10:00:00 AM CST",
+            "body_markdown": "It will be held on January 10.",
+        }
+    ]
+
+    items = parse_announcement_quiz_items(entries, course)
+
+    assert [item.due_date.isoformat() for item in items if item.due_date] == ["2027-01-10"]
+
+
 def test_scrape_announcements_keeps_distinct_titles_and_bodies(tmp_path: Path) -> None:
     from bb_sync.blackboard.models import Course
     from bb_sync.blackboard.scraper import scrape_announcements
@@ -916,6 +997,52 @@ def test_build_due_markdown_prioritizes_and_sorts() -> None:
     assert "[CSC5010](https://bb.cuhk.edu.cn/webapps/blackboard/execute/launcher" in markdown
 
 
+def test_build_due_markdown_marks_announcement_quiz() -> None:
+    from datetime import date, datetime
+
+    from bb_sync.blackboard.models import Course, DueItem
+    from bb_sync.core.due import build_due_markdown
+
+    courses = [Course(bb_id="_1_1", title="MDS5020:Data Mining_L01")]
+    items = [
+        DueItem(
+            "_1_1",
+            "MDS5020",
+            courses[0].title,
+            "In-Class Quiz-1 (Oct.13)",
+            date(2026, 10, 13),
+            kind="quiz",
+        )
+    ]
+
+    markdown = build_due_markdown(
+        courses,
+        items,
+        generated_at=datetime(2026, 10, 2, 8, 30),
+        today=date(2026, 10, 2),
+    )
+
+    assert "其中 1 项是公告里的课堂测验" in markdown
+    assert "【测验】In-Class Quiz-1 (Oct.13)" in markdown
+
+
+def test_due_item_as_dict_includes_kind() -> None:
+    from datetime import date
+
+    from bb_sync.blackboard.models import DueItem
+
+    item = DueItem(
+        "_1_1",
+        "MDS5020",
+        "MDS5020:Data Mining_L01",
+        "In-Class Quiz-1",
+        date(2026, 10, 13),
+        kind="quiz",
+    )
+
+    assert item.as_dict()["kind"] == "quiz"
+
+
 def test_build_due_markdown_empty_writes_congratulations() -> None:
     from datetime import date, datetime
 
@@ -985,6 +1112,7 @@ def test_run_sync_integrates_due_markdown(monkeypatch, tmp_path: Path, dry_run: 
     monkeypatch.setattr(service, "sync_course", lambda *args, **kwargs: None)
     monkeypatch.setattr(service.scraper, "scrape_courses", lambda page, include, console: [course])
     monkeypatch.setattr(service.scraper, "scrape_due_items", lambda page, course, console: [])
+    monkeypatch.setattr(service.scraper, "scrape_announcement_entries", lambda page, course: [])
 
     options = service.SyncOptions(
         settings=Settings(root=str(tmp_path), announcements=False),
@@ -999,6 +1127,53 @@ def test_run_sync_integrates_due_markdown(monkeypatch, tmp_path: Path, dry_run: 
     assert due_file.exists() is (not dry_run)
     if not dry_run:
         assert "## Congratulations! 🎉" in due_file.read_text(encoding="utf-8")
+
+
+def test_scan_due_items_merges_quiz_and_tracks_failures(monkeypatch) -> None:
+    from datetime import date
+
+    from bb_sync.blackboard.models import Course, DueItem
+    from bb_sync.core import service
+    from bb_sync.core.output import Console
+
+    course_a = Course(bb_id="_1_1", title="CSC5010: Artificial Intelligence")
+    course_b = Course(bb_id="_2_1", title="MDS5020:Data Mining_L01")
+    course_c = Course(bb_id="_3_1", title="DDA5002:Optimization_L02")
+    homework = DueItem("_1_1", "CSC5010", course_a.title, "Homework 1", date(2026, 10, 10))
+    quiz = DueItem(
+        "_2_1",
+        "MDS5020",
+        course_b.title,
+        "In-Class Quiz-1 (Oct.13)",
+        date(2026, 10, 13),
+        kind="quiz",
+    )
+
+    def fake_due(page, course, console):
+        if course is not course_a:
+            raise RuntimeError("主页超时")
+        return [homework]
+
+    def fake_entries(page, course):
+        if course is course_c:
+            raise RuntimeError("公告超时")
+        return [{"quiz": "entry"}] if course is course_b else []
+
+    monkeypatch.setattr(service.scraper, "scrape_due_items", fake_due)
+    monkeypatch.setattr(service.scraper, "scrape_announcement_entries", fake_entries)
+    monkeypatch.setattr(
+        service.scraper,
+        "parse_announcement_quiz_items",
+        lambda entries, course: [quiz] if course is course_b else [],
+    )
+
+    scan = service._scan_due_items(None, [course_a, course_b, course_c], Console(quiet=True))
+
+    assert [item.title for item in scan.items] == ["Homework 1", "In-Class Quiz-1 (Oct.13)"]
+    assert scan.todo_failed == 2
+    assert scan.announcement_failed == 1
+    assert scan.both_failed == 1
+    assert scan.incomplete == 2
 
 
 def test_print_due_details_one_item_per_line() -> None:
@@ -1023,12 +1198,14 @@ def test_print_due_details_one_item_per_line() -> None:
         [
             DueItem("_1_1", "CSC5010", "AI", "Homework 1", date(2026, 10, 10)),
             DueItem("_2_1", "MDS5122", "DL", "Reading", None),
+            DueItem("_3_1", "MDS5020", "DM", "Quiz 1", date(2026, 10, 13), kind="quiz"),
         ],
     )
 
     assert fake.messages == [
         "[due] 2026-10-10 | CSC5010 | Homework 1",
         "[due] 日期未知 | MDS5122 | Reading",
+        "[due] 2026-10-13 | MDS5020 | 【测验】Quiz 1",
     ]
 
 

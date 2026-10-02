@@ -36,7 +36,7 @@ bb-sync --json doctor       | jq '.ok'
 | --- | --- |
 | `course list` | 数组：`[{"id","code","title","folder"}, ...]` |
 | `run` | 对象：`{"downloaded","exists","would_download","empty","failed","courses"}` |
-| `due` | 对象：`{"path","total","failed","courses","items"}`；`items` 含课程、标题与 ISO 日期 |
+| `due` | 对象：`{"path","total","failed","announcement_failed","courses","items"}`；`items` 含课程、标题、类型（`task` / `quiz`）与 ISO 日期 |
 | `doctor` | 对象：`{"ok": bool, "checks": [{"label","ok","detail","hint","required"}]}` |
 | `doctor --list` | 对象：`{"checks": ["python","git", ...]}` |
 | `auth status` | 对象：`{"configured","source","account"}`（account 已脱敏） |
@@ -117,8 +117,8 @@ esac
 > **提示**：`bb-sync run` 的诊断信息（含「同步计划」）全部走 stderr，
 > 所以 `--json` 模式下 stdout 依然干净，可以放心重定向。
 >
-> 正常模式下 `bb-sync run` 还会生成或更新 `<root>/due.md`；`--dry-run` 只统计待办，
-> 不会写文件。
+> 正常模式下 `bb-sync run` 还会生成或更新 `<root>/due.md`（含公告里带日期的课堂测验）；
+> `--dry-run` 只统计待办，不会写文件。
 
 ## 相关
 

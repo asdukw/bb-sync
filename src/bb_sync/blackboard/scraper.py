@@ -322,6 +322,197 @@ def scrape_due_items(page: Page, course: Course, console: Console) -> list[DueIt
     return items
 
 
+# ---------------------------------------------------------------- 公告测验解析
+
+#: 月份前三字母 → 月号；容忍 Octorber 这类拼写错误与 Sept 这类缩写。
+_MONTH_BY_PREFIX = {
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "may": 5,
+    "jun": 6,
+    "jul": 7,
+    "aug": 8,
+    "sep": 9,
+    "oct": 10,
+    "nov": 11,
+    "dec": 12,
+}
+
+#: 英文日期两种语序；分隔允许空格或点（Oct.13 / Oct 13 / 13 November 2026）。
+_MONTH_DAY_RE = re.compile(
+    r"\b(?P<month>[A-Za-z]{3,12})\.?[ \t]*(?P<day>\d{1,2})(?:st|nd|rd|th)?(?!\d)"
+    r"(?:\s*,?\s*(?P<year>\d{4})(?!\d))?",
+    re.IGNORECASE,
+)
+_DAY_MONTH_RE = re.compile(
+    r"\b(?P<day>\d{1,2})(?:st|nd|rd|th)?(?!\d)\s+(?P<month>[A-Za-z]{3,12})\.?"
+    r"(?:\s*,?\s*(?P<year>\d{4})(?!\d))?",
+    re.IGNORECASE,
+)
+_CN_DATE_RE = re.compile(
+    r"(?:(?P<year>\d{4})\s*年\s*)?(?P<month>\d{1,2})\s*月\s*(?P<day>\d{1,2})\s*日"
+)
+
+#: 公告里的课堂测验关键词；\b 防止把 coding_quiz-1.zip 这类内部下划线文件名当测验。
+_QUIZ_RE = re.compile(r"\bquiz\w*|小测|随堂测|测验", re.IGNORECASE)
+
+#: 关键词之后最多检查这么多字符，避免把远处的日期牵强算成测验日期。
+_QUIZ_DATE_WINDOW = 240
+
+
+def _month_number(word: str) -> int | None:
+    """按前三字母识别月份，返回月号；不是月份返回 None。"""
+    return _MONTH_BY_PREFIX.get(word[:3].lower())
+
+
+def _make_date(year: int | None, month: int, day: int, reference: date) -> date | None:
+    """组装并校验日期，无效返回 None。
+
+    缺年份时用 reference 的年份；若推断结果早于 reference，且处于「12 月公告提到
+    次年 1/2 月」这类学期跨年场景，则顺延一年。显式写了年份的日期不做推断。
+    """
+    if year is None:
+        try:
+            value = date(reference.year, month, day)
+        except ValueError:
+            return None
+        if value < reference and reference.month >= 9 and value.month <= 2:
+            try:
+                value = date(reference.year + 1, month, day)
+            except ValueError:
+                return None
+        return value
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+
+def _find_dates(text: str, reference: date) -> list[tuple[int, date]]:
+    """提取文本里的日期，返回按出现位置排序的 ``(位置, 日期)``；无效日期忽略。"""
+    found: dict[int, date] = {}
+
+    def add(pos: int, value: date | None) -> None:
+        if value is not None and pos not in found:
+            found[pos] = value
+
+    for match in _DUE_DATE_RE.finditer(text):
+        add(match.start(), parse_due_date(match.group(1)))
+    for match in _CN_DATE_RE.finditer(text):
+        raw_year = match.group("year")
+        add(
+            match.start(),
+            _make_date(
+                int(raw_year) if raw_year else None,
+                int(match.group("month")),
+                int(match.group("day")),
+                reference,
+            ),
+        )
+    for pattern in (_MONTH_DAY_RE, _DAY_MONTH_RE):
+        for match in pattern.finditer(text):
+            month = _month_number(match.group("month"))
+            if month is None:
+                continue
+            raw_year = match.group("year")
+            add(
+                match.start(),
+                _make_date(
+                    int(raw_year) if raw_year else None,
+                    month,
+                    int(match.group("day")),
+                    reference,
+                ),
+            )
+    return sorted(found.items())
+
+
+def parse_announcement_date(text: str, *, reference: date | None = None) -> date | None:
+    """解析公告文本里的第一个日期；缺年份时用 reference（默认今天）补全。"""
+    if not text:
+        return None
+    dates = _find_dates(text, reference or date.today())
+    return dates[0][1] if dates else None
+
+
+def _pick_future_date(candidates: list[tuple[int, date]], posted: date | None) -> date | None:
+    """取第一个不早于公告发布时间的日期；全部早于发布时间视为历史信息。"""
+    if posted is None:
+        return candidates[0][1] if candidates else None
+    for _, value in candidates:
+        if value >= posted:
+            return value
+    return None
+
+
+def _extract_quiz_date(title: str, body: str, posted: date | None) -> date | None:
+    """从公告里定位测验日期。
+
+    只看标题与正文中 quiz 关键词之后、同一段内的日期：日期必须写在测验
+    名称后面，避免把关键词之前的作业截止日期误当成测验日期。
+    """
+    reference = posted or date.today()
+    if _QUIZ_RE.search(title):
+        chosen = _pick_future_date(_find_dates(title, reference), posted)
+        if chosen:
+            return chosen
+    text = f"{title}\n{body}" if body else title
+    for match in _QUIZ_RE.finditer(text):
+        window = text[match.end() : match.end() + _QUIZ_DATE_WINDOW]
+        para_end = window.find("\n\n")
+        if para_end >= 0:
+            window = window[:para_end]
+        chosen = _pick_future_date(_find_dates(window, reference), posted)
+        if chosen:
+            return chosen
+    return None
+
+
+def _quiz_label_from_body(body: str) -> str:
+    """标题为空时，用正文里带 quiz 关键词的那一行兜底做条目标题。"""
+    for line in body.splitlines():
+        if _QUIZ_RE.search(line):
+            return line.strip()[:120]
+    return ""
+
+
+def parse_announcement_quiz_items(entries: list[dict[str, str]], course: Course) -> list[DueItem]:
+    """把公告里带日期的课堂测验整理成待办条目。
+
+    读不出日期、或日期早于公告发布时间的公告一律跳过：宁可不收录，
+    也不要把「复习资料里提到 quiz」误当成待办。
+    """
+    items: list[DueItem] = []
+    seen: set[tuple[str, str]] = set()
+    for entry in entries:
+        title = _clean_announcement_text(str(entry.get("title") or "")).replace("\n", " ").strip()
+        body = _clean_announcement_text(str(entry.get("body_markdown") or entry.get("body") or ""))
+        if not title and not body:
+            continue
+        posted = parse_announcement_date(str(entry.get("posted_on") or ""))
+        due_date = _extract_quiz_date(title, body, posted)
+        if due_date is None:
+            continue
+        label = title or _quiz_label_from_body(body) or course.code or course.title
+        key = (due_date.isoformat(), label.casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(
+            DueItem(
+                course_id=course.bb_id,
+                course_code=course.code,
+                course_title=course.title,
+                title=label,
+                due_date=due_date,
+                kind="quiz",
+            )
+        )
+    return items
+
+
 def _clean_announcement_text(value: str) -> str:
     """归一文本：压缩行尾空白，但保留段落和列表产生的换行。"""
     text = value.replace("\xa0", " ").replace("\r\n", "\n").replace("\r", "\n")
@@ -352,22 +543,19 @@ def build_announcements_markdown(course_title: str, entries: list[dict[str, str]
     return "\n".join(lines).rstrip() + "\n"
 
 
-def scrape_announcements(
-    page: Page, course: Course, course_dir: Path, dry_run: bool, console: Console
-) -> int:
-    """抓取公告写入 ``announcements.md``；返回写入条数（失败不阻塞主流程）。"""
-    try:
-        page.goto(
-            f"{BASE}/webapps/blackboard/execute/announcement?method=search"
-            f"&context=mybb&viewChoice=2&course_id={course.bb_id}",
-            wait_until="domcontentloaded",
-            timeout=20000,
-        )
-        _wait_for_content(page, "#announcementList > li", 1000)
-        # 经典版公告页的 li 本身没有 announcement class；唯一可靠的容器是列表本身。
-        entries: list[dict[str, str]] = page.eval_on_selector_all(
-            "#announcementList > li",
-            """els => {
+def scrape_announcement_entries(page: Page, course: Course) -> list[dict[str, str]]:
+    """抓取课程公告页的结构化条目（不落盘；失败抛异常，由调用方决定处理方式）。"""
+    page.goto(
+        f"{BASE}/webapps/blackboard/execute/announcement?method=search"
+        f"&context=mybb&viewChoice=2&course_id={course.bb_id}",
+        wait_until="domcontentloaded",
+        timeout=20000,
+    )
+    _wait_for_content(page, "#announcementList > li", 1000)
+    # 经典版公告页的 li 本身没有 announcement class；唯一可靠的容器是列表本身。
+    entries: list[dict[str, str]] = page.eval_on_selector_all(
+        "#announcementList > li",
+        """els => {
                 const toMarkdown = root => {
                     const render = node => {
                         if (!node) return '';
@@ -426,7 +614,16 @@ def scrape_announcements(
                     };
                 });
             }""",
-        )
+    )
+    return entries
+
+
+def scrape_announcements(
+    page: Page, course: Course, course_dir: Path, dry_run: bool, console: Console
+) -> int:
+    """抓取公告写入 ``announcements.md``；返回写入条数（失败不阻塞主流程）。"""
+    try:
+        entries = scrape_announcement_entries(page, course)
         count = len(entries)
         if count and not dry_run:
             course_dir.mkdir(parents=True, exist_ok=True)
@@ -447,9 +644,12 @@ __all__ = [
     "find_files",
     "make_slug",
     "match_category",
+    "parse_announcement_date",
+    "parse_announcement_quiz_items",
     "parse_due_date",
     "parse_due_entries",
     "sanitize_filename",
+    "scrape_announcement_entries",
     "scrape_announcements",
     "scrape_courses",
     "scrape_due_items",

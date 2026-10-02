@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 from playwright.sync_api import sync_playwright
@@ -48,6 +48,21 @@ class DueOptions:
     console: Console
     headed: bool = False
     courses: list[str] | None = None
+
+
+@dataclass
+class DueScan:
+    """一次全课程待办扫描的结果与失败统计。"""
+
+    items: list[DueItem] = field(default_factory=list)
+    todo_failed: int = 0  # Due / To Do 模块抓取失败的课程数
+    announcement_failed: int = 0  # 公告抓取失败的课程数
+    both_failed: int = 0  # 两个来源都失败的课程数（该课程结果完全缺失）
+
+    @property
+    def incomplete(self) -> int:
+        """至少一个来源失败的课程数，用于提示 due.md 可能不完整。"""
+        return self.todo_failed + self.announcement_failed - self.both_failed
 
 
 def plan_root(settings: Settings, config_path: Path, cli_root: str | None) -> Path:
@@ -190,20 +205,40 @@ def _print_plan(console: Console, courses: list[Course], root: Path, dry_run: bo
     console.log("")
 
 
-def _scan_due_items(page, courses: list[Course], console: Console) -> tuple[list[DueItem], int]:
-    """逐课程抓取 Due，并返回排序后的条目与失败课程数。"""
-    items: list[DueItem] = []
-    failed = 0
+def _scan_due_items(page, courses: list[Course], console: Console) -> DueScan:
+    """逐课程抓取 Due / To Do 与公告里的课堂测验，并统计失败情况。"""
+    scan = DueScan()
     for course in courses:
+        label = course.code or course.title
+        todo_items: list[DueItem] = []
+        quiz_items: list[DueItem] = []
+        todo_ok = False
+        announcement_ok = False
         try:
-            found = scraper.scrape_due_items(page, course, console)
+            todo_items = scraper.scrape_due_items(page, course, console)
+            todo_ok = True
         except Exception as exc:  # 单门课失败不阻断其它课程
-            failed += 1
-            console.warn(f"[due] {course.code or course.title} 抓取失败: {exc}")
-            continue
-        items.extend(found)
-        console.log(f"    {course.code or course.title}: 待办 x{len(found)}")
-    return due.sort_due_items(items), failed
+            scan.todo_failed += 1
+            console.warn(f"[due] {label} To Do 抓取失败: {exc}")
+        try:
+            entries = scraper.scrape_announcement_entries(page, course)
+            quiz_items = scraper.parse_announcement_quiz_items(entries, course)
+            announcement_ok = True
+        except Exception as exc:  # 公告失败不影响已读到的 To Do
+            scan.announcement_failed += 1
+            console.warn(f"[due] {label} 公告抓取失败: {exc}")
+        if not todo_ok and not announcement_ok:
+            scan.both_failed += 1
+        scan.items.extend(todo_items)
+        scan.items.extend(quiz_items)
+        parts = []
+        if todo_ok:
+            parts.append(f"待办 x{len(todo_items)}")
+        if quiz_items:
+            parts.append(f"公告测验 x{len(quiz_items)}")
+        console.log(f"    {label}: {'，'.join(parts) if parts else '未读取到内容'}")
+    scan.items = due.sort_due_items(scan.items)
+    return scan
 
 
 def run_sync(options: SyncOptions) -> SyncStats:
@@ -248,23 +283,24 @@ def run_sync(options: SyncOptions) -> SyncStats:
                 stats.courses.append(course.code or course.title)
                 sync_course(page, course, options.root / course.slug, options, stats, downloads)
 
-            due_items, due_failed = _scan_due_items(page, courses, console)
+            scan = _scan_due_items(page, courses, console)
+            due_items = scan.items
             due_path = options.root / "due.md"
             if options.dry_run:
-                if due_failed == len(courses):
+                if scan.both_failed == len(courses):
                     message = "待办抓取全部失败"
-                elif not due_items and not due_failed:
+                elif not due_items and not scan.incomplete:
                     message = "Congratulations! 没有待办"
                 else:
                     message = f"待办 {len(due_items)} 项"
                 console.log(f"[due] {message}（dry-run，未写入 due.md）")
-            elif due_failed == len(courses):
+            elif scan.both_failed == len(courses):
                 console.warn("[due] 所有课程待办抓取失败，保留现有 due.md")
             else:
-                due.write_due_markdown(due_path, courses, due_items, failed=due_failed)
+                due.write_due_markdown(due_path, courses, due_items, failed=scan.incomplete)
                 if due_items:
                     console.log(f"[due] {len(due_items)} 项 → due.md")
-                elif due_failed:
+                elif scan.incomplete:
                     console.log("[due] 未读取到待办（部分课程失败）→ due.md")
                 else:
                     console.log("[due] Congratulations! 没有待办 → due.md")
@@ -275,8 +311,8 @@ def run_sync(options: SyncOptions) -> SyncStats:
         steel.release_session(session, console)
 
     _print_summary(console, stats, options.dry_run)
-    if due_failed < len(courses):
-        _print_due_details(console, due_items, due_failed)
+    if scan.both_failed < len(courses):
+        _print_due_details(console, due_items, scan.incomplete)
     return stats
 
 
@@ -301,7 +337,9 @@ def _print_due_details(console: Console, items: list[DueItem], failed: int = 0) 
         return
     for item in items:
         due_date = item.due_date.isoformat() if item.due_date else "日期未知"
-        console.log(f"[due] {due_date} | {item.course_label} | {item.title}")
+        label = due.kind_label(item.kind)
+        badge = f"【{label}】" if label else ""
+        console.log(f"[due] {due_date} | {item.course_label} | {badge}{item.title}")
 
 
 def list_courses(options: SyncOptions) -> list[Course]:
@@ -350,20 +388,22 @@ def run_due(options: DueOptions) -> DueStats:
                 )
 
             stats.courses = [course.code or course.title for course in courses]
-            items, stats.failed = _scan_due_items(page, courses, console)
+            scan = _scan_due_items(page, courses, console)
+            stats.failed = scan.todo_failed
+            stats.announcement_failed = scan.announcement_failed
 
-            if stats.failed == len(courses):
+            if scan.both_failed == len(courses):
                 raise NetworkError(
-                    "所有课程主页都抓取失败",
+                    "所有课程的待办与公告都抓取失败",
                     "检查网络连接与登录状态，或先用 bb-sync run --headed 刷新登录态",
                 )
 
-            stats.items = items
+            stats.items = scan.items
             due.write_due_markdown(
                 options.root / "due.md",
                 courses,
-                items,
-                failed=stats.failed,
+                scan.items,
+                failed=scan.incomplete,
             )
             ctx.close()
             browser.close()
@@ -372,8 +412,13 @@ def run_due(options: DueOptions) -> DueStats:
 
     console.rule("待办汇总")
     console.log(f"发现 {stats.total} 项待办，已写入 {stats.path}")
+    problems = []
     if stats.failed:
-        console.warn(f"有 {stats.failed} 门课程抓取失败，due.md 可能不完整")
+        problems.append(f"{stats.failed} 门课程 To Do 抓取失败")
+    if stats.announcement_failed:
+        problems.append(f"{stats.announcement_failed} 门课程公告抓取失败")
+    if problems:
+        console.warn("；".join(problems) + "，due.md 可能不完整")
     return stats
 
 

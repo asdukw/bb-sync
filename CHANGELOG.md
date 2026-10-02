@@ -2,6 +2,22 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 新增
+
+- `due.md` 会从每门课公告里整理带日期的课堂测验（quiz），标记为【测验】并计入同一套
+  优先级分组；`bb-sync due` 与 `bb-sync run` 均生效。读不出日期或日期早于公告发布时间
+  的公告会被跳过，避免把复习资料里的 quiz 提及误当成待办。
+- `bb-sync --json due` 的 `items` 新增 `kind` 字段（`task` / `quiz`），统计新增
+  `announcement_failed`；公告抓取失败不影响 To Do 待办，单独提示。
+
+### 测试
+
+- 新增公告测验提取测试：常见日期格式（`Oct.13`、`13 November 2026`、中文日期等）、
+  月份拼写错误（`Octorber`）、跨年推断、历史公告与资料类提及的排除、Markdown 标记
+  与来源失败统计。
+
 ## [1.6.1] — 2026-10-01
 
 ### 修复

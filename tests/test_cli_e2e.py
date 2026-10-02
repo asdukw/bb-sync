@@ -143,6 +143,7 @@ def test_due_command_emits_json_and_passes_filters(cli, config_file: Path, monke
     payload = json.loads(result.stdout)
     assert payload["path"] == str(output_root / "due.md")
     assert payload["courses"] == ["CSC5010"]
+    assert payload["announcement_failed"] == 0
 
 
 def test_config_subcommands_present(cli) -> None:
