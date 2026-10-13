@@ -821,10 +821,10 @@ def test_parse_announcement_date_supports_common_formats() -> None:
     assert parse_announcement_date("Due 13/40/26", reference=reference) is None
 
 
-def test_parse_announcement_quiz_items_keeps_only_dated_quiz() -> None:
+def test_parse_announcement_due_items_keeps_only_dated_quiz() -> None:
     """只收录带未来日期的测验：资料/回顾类公告不能变成待办。"""
     from bb_sync.blackboard.models import Course
-    from bb_sync.blackboard.scraper import parse_announcement_quiz_items
+    from bb_sync.blackboard.scraper import parse_announcement_due_items
 
     course = Course(bb_id="_18482_1", title="MDS5020:Data Mining_L01")
     entries = [
@@ -857,7 +857,7 @@ def test_parse_announcement_quiz_items_keeps_only_dated_quiz() -> None:
         },
     ]
 
-    items = parse_announcement_quiz_items(entries, course)
+    items = parse_announcement_due_items(entries, course)
 
     assert len(items) == 1
     assert items[0].kind == "quiz"
@@ -867,9 +867,9 @@ def test_parse_announcement_quiz_items_keeps_only_dated_quiz() -> None:
     assert items[0].due_date.isoformat() == "2026-10-13"
 
 
-def test_parse_announcement_quiz_items_infers_year_across_term_boundary() -> None:
+def test_parse_announcement_due_items_infers_year_across_term_boundary() -> None:
     from bb_sync.blackboard.models import Course
-    from bb_sync.blackboard.scraper import parse_announcement_quiz_items
+    from bb_sync.blackboard.scraper import parse_announcement_due_items
 
     course = Course(bb_id="_1_1", title="MDS5020:Data Mining_L01")
     entries = [
@@ -880,9 +880,90 @@ def test_parse_announcement_quiz_items_infers_year_across_term_boundary() -> Non
         }
     ]
 
-    items = parse_announcement_quiz_items(entries, course)
+    items = parse_announcement_due_items(entries, course)
 
     assert [item.due_date.isoformat() for item in items if item.due_date] == ["2027-01-10"]
+
+
+def test_parse_announcement_due_items_recognizes_exams() -> None:
+    """exam 系关键词与 midterm / final + test 组合算考试，日常措辞不算。"""
+    from bb_sync.blackboard.models import Course
+    from bb_sync.blackboard.scraper import parse_announcement_due_items
+
+    course = Course(bb_id="_1_1", title="CSC5010: Artificial Intelligence")
+    entries = [
+        {
+            "title": "Final Exam Schedule",
+            "posted_on": "Posted on: Monday, November 2, 2026 10:00:00 AM CST",
+            "body_markdown": "The final exam will be held on **December 15, 2026** in LT-1.",
+        },
+        {
+            "title": "Midterm Test",
+            "posted_on": "Posted on: Monday, October 5, 2026 10:00:00 AM CST",
+            "body_markdown": "Midterm Test on November 3.",
+        },
+        {
+            "title": "期末考试安排",
+            "posted_on": "Posted on: Monday, November 2, 2026 10:00:00 AM CST",
+            "body_markdown": "考试时间为 2026年12月20日 9:00。",
+        },
+        {
+            "title": "Mid-term Examination",
+            "posted_on": "Posted on: Monday, November 2, 2026 10:00:00 AM CST",
+            "body_markdown": "The examination takes place on December 20, 2026.",
+        },
+        {
+            "title": "Final project report",
+            "posted_on": "Posted on: Monday, November 2, 2026 10:00:00 AM CST",
+            "body_markdown": "Submit the final report by December 1, 2026.",
+        },
+        {
+            "title": "Lab 3 reminder",
+            "posted_on": "Posted on: Monday, November 2, 2026 10:00:00 AM CST",
+            "body_markdown": "Please test your code on the sample data before Friday.",
+        },
+        {
+            "title": "Week 6 slides",
+            "posted_on": "Posted on: Monday, November 2, 2026 10:00:00 AM CST",
+            "body_markdown": "For example, the dataset posted on December 8, 2026 is optional.",
+        },
+    ]
+
+    items = parse_announcement_due_items(entries, course)
+
+    assert [(item.kind, item.title) for item in items] == [
+        ("exam", "Final Exam Schedule"),
+        ("exam", "Midterm Test"),
+        ("exam", "期末考试安排"),
+        ("exam", "Mid-term Examination"),
+    ]
+    assert [item.due_date.isoformat() for item in items if item.due_date] == [
+        "2026-12-15",
+        "2026-11-03",
+        "2026-12-20",
+        "2026-12-20",
+    ]
+
+
+def test_parse_announcement_due_items_prefers_exam_over_quiz() -> None:
+    """一条公告同时提到考试和测验时归为考试：覆盖测验内容的期末考不该被当成测验。"""
+    from bb_sync.blackboard.models import Course
+    from bb_sync.blackboard.scraper import parse_announcement_due_items
+
+    course = Course(bb_id="_1_1", title="MDS5020:Data Mining_L01")
+    entries = [
+        {
+            "title": "Final Exam and Quiz 4",
+            "posted_on": "Posted on: Monday, November 2, 2026 10:00:00 AM CST",
+            "body_markdown": "The Final Exam covers Quiz 1-3 and is set for December 15, 2026.",
+        }
+    ]
+
+    items = parse_announcement_due_items(entries, course)
+
+    assert [
+        (item.kind, item.due_date.isoformat() if item.due_date else None) for item in items
+    ] == [("exam", "2026-12-15")]
 
 
 def test_scrape_announcements_keeps_distinct_titles_and_bodies(tmp_path: Path) -> None:
@@ -997,7 +1078,7 @@ def test_build_due_markdown_prioritizes_and_sorts() -> None:
     assert "[CSC5010](https://bb.cuhk.edu.cn/webapps/blackboard/execute/launcher" in markdown
 
 
-def test_build_due_markdown_marks_announcement_quiz() -> None:
+def test_build_due_markdown_marks_announcement_quiz_and_exam() -> None:
     from datetime import date, datetime
 
     from bb_sync.blackboard.models import Course, DueItem
@@ -1012,7 +1093,15 @@ def test_build_due_markdown_marks_announcement_quiz() -> None:
             "In-Class Quiz-1 (Oct.13)",
             date(2026, 10, 13),
             kind="quiz",
-        )
+        ),
+        DueItem(
+            "_1_1",
+            "MDS5020",
+            courses[0].title,
+            "Final Exam",
+            date(2026, 12, 15),
+            kind="exam",
+        ),
     ]
 
     markdown = build_due_markdown(
@@ -1022,8 +1111,9 @@ def test_build_due_markdown_marks_announcement_quiz() -> None:
         today=date(2026, 10, 2),
     )
 
-    assert "其中 1 项是公告里的课堂测验" in markdown
+    assert "其中公告里的测验 1 项、考试 1 项已一并作为待办列出。" in markdown
     assert "【测验】In-Class Quiz-1 (Oct.13)" in markdown
+    assert "【考试】Final Exam" in markdown
 
 
 def test_due_item_as_dict_includes_kind() -> None:
@@ -1041,6 +1131,17 @@ def test_due_item_as_dict_includes_kind() -> None:
     )
 
     assert item.as_dict()["kind"] == "quiz"
+
+    exam = DueItem(
+        "_1_1",
+        "MDS5020",
+        "MDS5020:Data Mining_L01",
+        "Final Exam",
+        date(2026, 12, 15),
+        kind="exam",
+    )
+
+    assert exam.as_dict()["kind"] == "exam"
 
 
 def test_build_due_markdown_empty_writes_congratulations() -> None:
@@ -1163,7 +1264,7 @@ def test_scan_due_items_merges_quiz_and_tracks_failures(monkeypatch) -> None:
     monkeypatch.setattr(service.scraper, "scrape_announcement_entries", fake_entries)
     monkeypatch.setattr(
         service.scraper,
-        "parse_announcement_quiz_items",
+        "parse_announcement_due_items",
         lambda entries, course: [quiz] if course is course_b else [],
     )
 
@@ -1199,6 +1300,7 @@ def test_print_due_details_one_item_per_line() -> None:
             DueItem("_1_1", "CSC5010", "AI", "Homework 1", date(2026, 10, 10)),
             DueItem("_2_1", "MDS5122", "DL", "Reading", None),
             DueItem("_3_1", "MDS5020", "DM", "Quiz 1", date(2026, 10, 13), kind="quiz"),
+            DueItem("_4_1", "CSC5010", "AI", "Final Exam", date(2026, 12, 15), kind="exam"),
         ],
     )
 
@@ -1206,6 +1308,7 @@ def test_print_due_details_one_item_per_line() -> None:
         "[due] 2026-10-10 | CSC5010 | Homework 1",
         "[due] 日期未知 | MDS5122 | Reading",
         "[due] 2026-10-13 | MDS5020 | 【测验】Quiz 1",
+        "[due] 2026-12-15 | CSC5010 | 【考试】Final Exam",
     ]
 
 

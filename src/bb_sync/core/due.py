@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -20,8 +20,8 @@ _BUCKET_LABELS = {
     "unknown": "日期未知",
 }
 
-#: 非普通任务的待办类型标签（来自公告的课堂测验等）。
-_KIND_LABELS = {"quiz": "测验"}
+#: 非普通任务的待办类型标签（来自公告的课堂测验 / 考试）；顺序即汇总文案里的出现顺序。
+_KIND_LABELS = {"quiz": "测验", "exam": "考试"}
 
 
 def kind_label(kind: str) -> str:
@@ -94,15 +94,21 @@ def build_due_markdown(
     for bucket_items in grouped.values():
         bucket_items.sort(key=_sort_key)
 
-    quiz_count = sum(1 for item in items if item.kind == "quiz")
+    kind_counts = Counter(item.kind for item in items)
+    # 只统计公告整理出的待办，按 _KIND_LABELS 的固定顺序列出（测验 → 考试）。
+    announcement_parts = [
+        f"{label} {kind_counts[kind]} 项"
+        for kind, label in _KIND_LABELS.items()
+        if kind_counts[kind]
+    ]
     lines = [
         "# Blackboard 待办",
         "",
         f"> 更新时间：{generated.strftime('%Y-%m-%d %H:%M')}（本地时间）",
         f"> 已检查 {len(courses)} 门课程，发现 {len(items)} 项待办；按优先级和截止日期排列。",
     ]
-    if quiz_count:
-        lines.append(f"> 其中 {quiz_count} 项是公告里的课堂测验，已一并作为待办列出。")
+    if announcement_parts:
+        lines.append(f"> 其中公告里的{'、'.join(announcement_parts)}已一并作为待办列出。")
     if failed:
         lines.append(f"> 注意：{failed} 门课程抓取失败，结果可能不完整。")
     lines.append("")

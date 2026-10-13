@@ -49,7 +49,7 @@ class FileItem:
 
 @dataclass(frozen=True)
 class DueItem:
-    """一项待办：课程主页 Due / To Do 任务，或从公告整理出的课堂测验。"""
+    """一项待办：课程主页 Due / To Do 任务，或从公告整理出的课堂测验 / 考试。"""
 
     course_id: str
     course_code: str
@@ -57,7 +57,7 @@ class DueItem:
     title: str
     due_date: date | None
     due_text: str = ""
-    kind: str = "task"  # task = To Do 模块；quiz = 公告里的课堂测验
+    kind: str = "task"  # task = To Do 模块；quiz / exam = 公告里的课堂测验 / 考试
 
     @property
     def course_label(self) -> str:

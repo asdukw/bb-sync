@@ -2,6 +2,22 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 新增
+
+- `due.md` 除了课堂测验，也会从公告里整理带日期的**考试**，标记为【考试】并计入同一套
+  优先级分组。考试关键词取 exam 系词（含 examination）与中文「考试」，外加 midterm /
+  final 与 test 的组合（Final Test、Midterm Make-up Test）；单独出现的 midterm / final /
+  test 不算，避免把「final report」「test your code」这类日常措辞误当成考试。一条公告
+  同时提到考试和测验时归为考试（「Final Exam 覆盖 Quiz 1-3 内容」不该算测验）。
+- `bb-sync --json due` 的 `items[].kind` 取值扩展为 `task` / `quiz` / `exam`。
+
+### 测试
+
+- 新增考试提取测试：英文与中文考试公告、midterm + test 组合、日常措辞的排除，
+  以及考试优先于测验的归类。
+
 ## [1.7.0] — 2026-10-02
 
 ### 新增

@@ -206,12 +206,12 @@ def _print_plan(console: Console, courses: list[Course], root: Path, dry_run: bo
 
 
 def _scan_due_items(page, courses: list[Course], console: Console) -> DueScan:
-    """逐课程抓取 Due / To Do 与公告里的课堂测验，并统计失败情况。"""
+    """逐课程抓取 Due / To Do 与公告里的课堂测验 / 考试，并统计失败情况。"""
     scan = DueScan()
     for course in courses:
         label = course.code or course.title
         todo_items: list[DueItem] = []
-        quiz_items: list[DueItem] = []
+        announcement_items: list[DueItem] = []
         todo_ok = False
         announcement_ok = False
         try:
@@ -222,7 +222,7 @@ def _scan_due_items(page, courses: list[Course], console: Console) -> DueScan:
             console.warn(f"[due] {label} To Do 抓取失败: {exc}")
         try:
             entries = scraper.scrape_announcement_entries(page, course)
-            quiz_items = scraper.parse_announcement_quiz_items(entries, course)
+            announcement_items = scraper.parse_announcement_due_items(entries, course)
             announcement_ok = True
         except Exception as exc:  # 公告失败不影响已读到的 To Do
             scan.announcement_failed += 1
@@ -230,12 +230,12 @@ def _scan_due_items(page, courses: list[Course], console: Console) -> DueScan:
         if not todo_ok and not announcement_ok:
             scan.both_failed += 1
         scan.items.extend(todo_items)
-        scan.items.extend(quiz_items)
+        scan.items.extend(announcement_items)
         parts = []
         if todo_ok:
             parts.append(f"待办 x{len(todo_items)}")
-        if quiz_items:
-            parts.append(f"公告测验 x{len(quiz_items)}")
+        if announcement_items:
+            parts.append(f"公告测验/考试 x{len(announcement_items)}")
         console.log(f"    {label}: {'，'.join(parts) if parts else '未读取到内容'}")
     scan.items = due.sort_due_items(scan.items)
     return scan

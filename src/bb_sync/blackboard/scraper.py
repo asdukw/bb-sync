@@ -322,7 +322,7 @@ def scrape_due_items(page: Page, course: Course, console: Console) -> list[DueIt
     return items
 
 
-# ---------------------------------------------------------------- 公告测验解析
+# ---------------------------------------------------------------- 公告待办解析
 
 #: 月份前三字母 → 月号；容忍 Octorber 这类拼写错误与 Sept 这类缩写。
 _MONTH_BY_PREFIX = {
@@ -358,8 +358,25 @@ _CN_DATE_RE = re.compile(
 #: 公告里的课堂测验关键词；\b 防止把 coding_quiz-1.zip 这类内部下划线文件名当测验。
 _QUIZ_RE = re.compile(r"\bquiz\w*|小测|随堂测|测验", re.IGNORECASE)
 
-#: 关键词之后最多检查这么多字符，避免把远处的日期牵强算成测验日期。
-_QUIZ_DATE_WINDOW = 240
+#: 考试关键词：exam 系词（含 examination）与中文说法，外加 midterm / final 与
+#: test 的组合（Final Test、Midterm Make-up Test）。单独出现的 midterm / final /
+#: test 不算——「final report」「test your code」这类日常措辞太容易误报。
+#: exam 后必须直接收尾，否则 \bexam\w* 会把「for example」也算成考试。
+_EXAM_RE = re.compile(
+    r"\bexam(?:s|ination|inations)?\b|考试|考卷|(?:期中|期末)考"
+    r"|\b(?:mid[\s-]?term|final)\b[^.\n]{0,20}?\btest\w*",
+    re.IGNORECASE,
+)
+
+#: 待办类型 → 公告关键词；顺序即归类优先级：一条公告同时提到考试和测验时按考试算
+#: （「Final Exam 覆盖 Quiz 1-3 内容」应归为考试）。
+_ANNOUNCEMENT_KIND_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("exam", _EXAM_RE),
+    ("quiz", _QUIZ_RE),
+)
+
+#: 关键词之后最多检查这么多字符，避免把远处的日期牵强算成考试/测验日期。
+_KEYWORD_DATE_WINDOW = 240
 
 
 def _month_number(word: str) -> int | None:
@@ -447,20 +464,30 @@ def _pick_future_date(candidates: list[tuple[int, date]], posted: date | None) -
     return None
 
 
-def _extract_quiz_date(title: str, body: str, posted: date | None) -> date | None:
-    """从公告里定位测验日期。
+def _announcement_kind(text: str) -> tuple[str, re.Pattern[str]] | None:
+    """判断公告属于哪类待办，返回 ``(kind, 关键词正则)``；都不命中返回 None。"""
+    for kind, pattern in _ANNOUNCEMENT_KIND_PATTERNS:
+        if pattern.search(text):
+            return kind, pattern
+    return None
 
-    只看标题与正文中 quiz 关键词之后、同一段内的日期：日期必须写在测验
-    名称后面，避免把关键词之前的作业截止日期误当成测验日期。
+
+def _extract_keyword_date(
+    title: str, body: str, posted: date | None, pattern: re.Pattern[str]
+) -> date | None:
+    """从公告里定位关键词附近的日期。
+
+    只看标题与正文中关键词之后、同一段内的日期：日期必须写在测验 / 考试
+    名称后面，避免把关键词之前的作业截止日期误当成考试日期。
     """
     reference = posted or date.today()
-    if _QUIZ_RE.search(title):
+    if pattern.search(title):
         chosen = _pick_future_date(_find_dates(title, reference), posted)
         if chosen:
             return chosen
     text = f"{title}\n{body}" if body else title
-    for match in _QUIZ_RE.finditer(text):
-        window = text[match.end() : match.end() + _QUIZ_DATE_WINDOW]
+    for match in pattern.finditer(text):
+        window = text[match.end() : match.end() + _KEYWORD_DATE_WINDOW]
         para_end = window.find("\n\n")
         if para_end >= 0:
             window = window[:para_end]
@@ -470,16 +497,16 @@ def _extract_quiz_date(title: str, body: str, posted: date | None) -> date | Non
     return None
 
 
-def _quiz_label_from_body(body: str) -> str:
-    """标题为空时，用正文里带 quiz 关键词的那一行兜底做条目标题。"""
+def _announcement_label_from_body(body: str, pattern: re.Pattern[str]) -> str:
+    """标题为空时，用正文里带关键词的那一行兜底做条目标题。"""
     for line in body.splitlines():
-        if _QUIZ_RE.search(line):
+        if pattern.search(line):
             return line.strip()[:120]
     return ""
 
 
-def parse_announcement_quiz_items(entries: list[dict[str, str]], course: Course) -> list[DueItem]:
-    """把公告里带日期的课堂测验整理成待办条目。
+def parse_announcement_due_items(entries: list[dict[str, str]], course: Course) -> list[DueItem]:
+    """把公告里带日期的课堂测验与考试整理成待办条目。
 
     读不出日期、或日期早于公告发布时间的公告一律跳过：宁可不收录，
     也不要把「复习资料里提到 quiz」误当成待办。
@@ -491,11 +518,15 @@ def parse_announcement_quiz_items(entries: list[dict[str, str]], course: Course)
         body = _clean_announcement_text(str(entry.get("body_markdown") or entry.get("body") or ""))
         if not title and not body:
             continue
+        matched = _announcement_kind(f"{title}\n{body}" if body else title)
+        if matched is None:
+            continue
+        kind, pattern = matched
         posted = parse_announcement_date(str(entry.get("posted_on") or ""))
-        due_date = _extract_quiz_date(title, body, posted)
+        due_date = _extract_keyword_date(title, body, posted, pattern)
         if due_date is None:
             continue
-        label = title or _quiz_label_from_body(body) or course.code or course.title
+        label = title or _announcement_label_from_body(body, pattern) or course.code or course.title
         key = (due_date.isoformat(), label.casefold())
         if key in seen:
             continue
@@ -507,7 +538,7 @@ def parse_announcement_quiz_items(entries: list[dict[str, str]], course: Course)
                 course_title=course.title,
                 title=label,
                 due_date=due_date,
-                kind="quiz",
+                kind=kind,
             )
         )
     return items
@@ -645,7 +676,7 @@ __all__ = [
     "make_slug",
     "match_category",
     "parse_announcement_date",
-    "parse_announcement_quiz_items",
+    "parse_announcement_due_items",
     "parse_due_date",
     "parse_due_entries",
     "sanitize_filename",

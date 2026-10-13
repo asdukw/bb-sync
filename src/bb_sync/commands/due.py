@@ -13,7 +13,8 @@ from bb_sync.core.errors import ConfigError
 SUBCOMMAND = "due"
 HELP = """扫描课程主页 Due / To Do 与公告，生成按优先级排列的 due.md。
 
-公告里带日期的课堂测验（quiz）也会整理成待办，并在 due.md 中标记为【测验】。
+公告里带日期的课堂测验与考试（quiz / exam）也会整理成待办，并在 due.md 中分别标记为
+【测验】【考试】。
 
 示例：
   bb-sync due                         扫描全部课程并写入 <root>/due.md
