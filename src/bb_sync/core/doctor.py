@@ -1,23 +1,22 @@
 """环境体检：逐项检查前置条件，输出 ✓/✗ 与修复提示。
 
-必查项（缺失即视为环境不可用）: Python / git / Node.js≥22 / npm / 浏览器 / 网络。
-可选展示项: 凭据 / Steel 后端状态。
+必查项（缺失即视为环境不可用）: Python / git / 浏览器 / 网络。
+可选展示项: 凭据 / 浏览器后端状态。
 """
 
 from __future__ import annotations
 
 import os
-import re
 import shutil
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from urllib import error, request
 
-from bb_sync import __version__
-from bb_sync.browser import steel
+from bb_sync import __version__, paths
+from bb_sync.blackboard.models import BASE
+from bb_sync.browser import launcher
 from bb_sync.core.errors import EnvironmentError_
 from bb_sync.core.output import Console
 from bb_sync.creds import load_credentials
@@ -55,17 +54,6 @@ def _git_install_hint() -> str:
     return "bb-sync 从 GitHub 安装需要 git：请通过系统包管理器安装"
 
 
-def _browser_install_hint() -> str:
-    """按平台给出浏览器安装方式。"""
-    if sys.platform == "darwin":
-        return "macOS 可运行 brew install --cask google-chrome 或 microsoft-edge"
-    if sys.platform.startswith("win"):
-        return (
-            "安装 Google Chrome 或使用 Windows 自带的 Edge；非默认位置时设置 CHROME_EXECUTABLE_PATH"
-        )
-    return "安装 Google Chrome、Chromium 或 Microsoft Edge；非默认位置时设置 CHROME_EXECUTABLE_PATH"
-
-
 def check_python() -> CheckResult:
     v = sys.version_info
     return CheckResult(
@@ -86,66 +74,39 @@ def check_git() -> CheckResult:
     )
 
 
-def check_node() -> CheckResult:
-    try:
-        path = steel._node_bin()
-    except EnvironmentError_:
-        path = None
-    ver = _tool_version([path, "--version"]) if path else None
-    ok = False
-    if ver:
-        m = re.match(r"v(\d+)", ver)
-        ok = bool(m) and int(m.group(1)) >= 22
-    return CheckResult(
-        ok,
-        "Node.js",
-        ver or "未找到",
-        steel._node_install_hint() + "（自带 npm）",
-    )
-
-
-def check_npm() -> CheckResult:
-    path = steel._npm_bin()
-    ver = _tool_version([path, "--version"]) if path else None
-    return CheckResult(
-        bool(ver),
-        "npm",
-        ver or "未找到",
-        "npm 随 Node.js 一起安装，单独缺失请重装 Node.js",
-    )
-
-
 def check_browser() -> CheckResult:
-    custom = os.environ.get("CHROME_EXECUTABLE_PATH")
-    if custom and Path(custom).exists():
-        return CheckResult(True, "浏览器", f"自定义 {custom}")
-    browser = steel.detect_browser()
-    if browser:
-        name = "Edge" if "edge" in Path(browser).name.lower() else "Chrome"
-        return CheckResult(True, "浏览器", f"{name} ({browser})")
-    return CheckResult(
-        False,
-        "浏览器",
-        "未检测到 Chrome/Edge",
-        _browser_install_hint(),
-    )
+    """探测本机 Chrome / Edge——现在它是唯一的外部运行时依赖。"""
+    try:
+        browser = launcher.detect_browser()
+    except EnvironmentError_ as exc:
+        return CheckResult(False, "浏览器", exc.message, exc.hint)
+    if browser is None:
+        return CheckResult(
+            False, "浏览器", "未检测到 Chrome / Edge", launcher.browser_install_hint()
+        )
+    if os.environ.get("CHROME_EXECUTABLE_PATH"):
+        return CheckResult(True, "浏览器", f"{browser.label}（自定义 {browser.path}）")
+    return CheckResult(True, "浏览器", f"{browser.label} ({browser.path})")
 
 
 def check_network(retries: int = 3) -> CheckResult:
-    """检查 github.com 可达性（首次部署 Steel 需要；代理抖动会瞬时失败，故重试）。"""
+    """检查 Blackboard 站点可达性（代理抖动会瞬时失败，故重试）。"""
     last_err = ""
     for _ in range(retries):
         try:
-            req = request.Request("https://github.com", headers={"User-Agent": "bb-sync"})
+            req = request.Request(BASE, headers={"User-Agent": "bb-sync"})
             request.urlopen(req, timeout=6)
-            return CheckResult(True, "网络", "github.com 可达")
-        except error.HTTPError:  # 有响应即视为可达（如 301/403）
-            return CheckResult(True, "网络", "github.com 可达")
+            return CheckResult(True, "网络", f"{BASE} 可达")
+        except error.HTTPError:  # 有响应即视为可达（如 301/302/403）
+            return CheckResult(True, "网络", f"{BASE} 可达")
         except Exception as exc:
             last_err = str(exc)
             time.sleep(1.5)
     return CheckResult(
-        False, "网络", f"github.com 不可达 ({last_err})", "代理用户请确认系统代理已开启"
+        False,
+        "网络",
+        f"{BASE} 不可达 ({last_err})",
+        "校外使用需要先连接学校 VPN；代理用户请确认系统代理已开启",
     )
 
 
@@ -163,33 +124,40 @@ def check_credentials() -> CheckResult:
     )
 
 
-def check_steel() -> CheckResult:
-    if steel.healthy():
-        return CheckResult(True, "Steel 后端", "服务端运行中", required=False)
-    if steel.is_deployed():
-        ref = steel.installed_ref()
-        label = f"{ref[:7]}…" if ref and len(ref) > 12 else ref
-        detail = f"已部署（{label}，未运行）" if label else "已部署（未运行，同步时自动启动）"
-        return CheckResult(True, "Steel 后端", detail, required=False)
+def check_browser_backend() -> CheckResult:
+    """后台浏览器实例是否在跑（不在也没关系，下次同步会自动拉起）。"""
+    session = launcher.current_session()
+    if session is None:
+        return CheckResult(
+            True,
+            "浏览器后端",
+            "未运行（下次同步自动启动）",
+            required=False,
+        )
     return CheckResult(
-        False,
-        "Steel 后端",
-        "未部署",
-        "首次同步时自动下载部署（依赖 Node.js 与网络），无需手动操作",
+        True,
+        "浏览器后端",
+        f"{session.browser.label} 运行中（{session.mode_label}，端口 {session.port}）",
         required=False,
     )
+
+
+def legacy_steel_hint() -> str:
+    """旧版 Steel 后端目录若还在，提示用户清理（2.0 起不再使用）。"""
+    legacy = paths.BB_SYNC_HOME / ".steel"
+    if not legacy.exists():
+        return ""
+    return f"旧版 Steel 后端已不再使用，可删除 {legacy} 释放磁盘空间"
 
 
 #: 体检项顺序即输出顺序
 CHECKS = (
     check_python,
     check_git,
-    check_node,
-    check_npm,
     check_browser,
     check_network,
     check_credentials,
-    check_steel,
+    check_browser_backend,
 )
 
 
@@ -218,6 +186,9 @@ def run_doctor(console: Console, *, skip_network: bool = False) -> list[CheckRes
         f"\n{total_ok}/{len(results)} 项通过"
         + ("，存在缺失项，请按提示修复" if required_fail else "")
     )
+    # 旧版残留是「提示」而非「缺项」，不要让它影响体检通过与否
+    if hint := legacy_steel_hint():
+        console.hint(hint)
     return results
 
 
@@ -227,4 +198,4 @@ def environment_ok(console: Console) -> bool:
     return not missing
 
 
-__all__ = ["CHECKS", "CheckResult", "environment_ok", "run_doctor"]
+__all__ = ["CHECKS", "CheckResult", "environment_ok", "legacy_steel_hint", "run_doctor"]

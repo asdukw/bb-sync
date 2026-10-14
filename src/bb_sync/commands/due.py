@@ -21,6 +21,7 @@ HELP = """扫描课程主页 Due / To Do 与公告，生成按优先级排列的
   bb-sync due --course CSC5010        只扫描指定课程（可重复）
   bb-sync due --root ~/University     临时指定输出目录
   bb-sync due --headed                有头模式（首次登录 / 需要人工过 MFA）
+  bb-sync due --headed --keep-open    跑完保留浏览器窗口，便于手动完成验证
   bb-sync --json due                  输出机器可读 JSON
 """
 
@@ -35,6 +36,9 @@ def due(
         None, "--course", help="只扫描指定课程代码（可多次），如 --course CSC5010"
     ),
     root: str = typer.Option(None, "--root", help="本次 due.md 的输出目录（临时覆盖配置）"),
+    keep_open: bool = typer.Option(
+        False, "--keep-open", help="跑完保留后台浏览器（手动过 MFA / 调试用）"
+    ),
 ) -> None:
     """生成课程待办清单。"""
     app_ctx: Context = ctx.obj
@@ -58,6 +62,7 @@ def due(
         console=console,
         headed=headed,
         courses=course or None,
+        keep_open=keep_open,
     )
     stats = service.run_due(options)
     console.emit(stats.as_dict())

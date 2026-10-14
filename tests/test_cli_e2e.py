@@ -39,7 +39,7 @@ def test_no_args_prints_help_and_exit_zero(cli) -> None:
     result = cli([])
     assert result.exit_code == 0
     assert "Usage" in result.stdout or "用法" in result.stdout
-    for name in ("run", "due", "doctor", "config", "auth", "course"):
+    for name in ("run", "due", "doctor", "config", "auth", "course", "browser"):
         assert name in result.stdout
 
 
@@ -203,6 +203,7 @@ def test_missing_required_argument_exits_two(cli) -> None:
         ["config", "--help"],
         ["auth", "--help"],
         ["course", "--help"],
+        ["browser", "--help"],
     ],
 )
 def test_subcommand_help_exits_zero(cli, args: list[str]) -> None:
@@ -220,6 +221,48 @@ def test_course_list_help_shows_list(cli) -> None:
     result = cli(["course", "--help"])
     assert result.exit_code == 0
     assert "list" in result.stdout
+
+
+def test_browser_status_is_offline_and_json_clean(cli) -> None:
+    """``browser status`` 只读本地状态文件：没有实例时如实说「未运行」。"""
+    result = cli(["--json", "browser", "status"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["running"] is False
+    assert payload["port"] is None
+
+
+def test_browser_stop_reports_no_instance(cli) -> None:
+    """没有实例在跑时 ``browser stop`` 正常结束，不报错。"""
+    result = cli(["--json", "browser", "stop"])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == {"stopped": False}
+
+
+def test_browser_status_reports_running_instance(cli, monkeypatch) -> None:
+    """实例在跑时状态走得通，且详细信息只出现在 stderr（人读）/ JSON（脚本）。"""
+    from bb_sync.browser import launcher
+    from bb_sync.commands import browser as browser_cmd
+
+    session = launcher.Session(
+        launcher.Browser("chrome", Path("C:/fake/chrome.exe")),
+        1234,
+        "ws://127.0.0.1:1234/devtools/browser/x",
+        headed=False,
+    )
+    monkeypatch.setattr(browser_cmd.launcher, "current_session", lambda: session)
+
+    result = cli(["--json", "browser", "status"])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == {
+        "running": True,
+        "browser": "chrome",
+        "executable": str(Path("C:/fake/chrome.exe")),
+        "mode": "headless",
+        "port": 1234,
+        "profile": str(launcher.PROFILE_ROOT / "chrome"),
+    }
+    assert result.stderr == ""
 
 
 def test_due_command_emits_json_and_passes_filters(cli, config_file: Path, monkeypatch) -> None:
@@ -246,6 +289,33 @@ def test_due_command_emits_json_and_passes_filters(cli, config_file: Path, monke
     assert payload["path"] == str(output_root / "due.md")
     assert payload["courses"] == ["CSC5010"]
     assert payload["announcement_failed"] == 0
+
+
+def test_run_keep_open_flag_reaches_service(cli, config_file: Path, monkeypatch) -> None:
+    """``--keep-open`` 必须传到底层选项；不传时是默认的「跑完自动关」。"""
+    from bb_sync.blackboard.models import SyncStats
+    from bb_sync.core import service
+
+    config_file.write_text("root: ~/courses\ninclude: all\n", encoding="utf-8")
+    seen: list[bool] = []
+
+    def fake_run_sync(options):
+        seen.append(options.keep_open)
+        return SyncStats()
+
+    monkeypatch.setattr(service, "run_sync", fake_run_sync)
+
+    assert cli(["--json", "run"]).exit_code == 0
+    assert cli(["--json", "run", "--keep-open"]).exit_code == 0
+    assert seen == [False, True]
+
+
+def test_keep_open_documented_in_help(cli) -> None:
+    """跑完自动关是默认行为，保留浏览器必须有显式开关且出现在帮助里。"""
+    for args in (["run", "--help"], ["due", "--help"], ["course", "list", "--help"]):
+        result = cli(args)
+        assert result.exit_code == 0
+        assert "--keep-open" in result.stdout
 
 
 def test_config_subcommands_present(cli) -> None:
@@ -469,8 +539,11 @@ def test_doctor_list_is_offline(cli) -> None:
     """``doctor --list`` 不碰网络，名字走 stdout。"""
     result = cli(["doctor", "--list"])
     assert result.exit_code == 0
-    for name in ("python", "git", "node", "browser"):
+    for name in ("python", "git", "browser", "network", "browser_backend"):
         assert name in result.stdout
+    # Node / npm 是旧 Steel 后端的依赖，已经不需要了
+    assert "node" not in result.stdout
+    assert "npm" not in result.stdout
 
 
 def test_doctor_list_json(cli) -> None:

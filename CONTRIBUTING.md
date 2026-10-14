@@ -9,9 +9,9 @@
 - Python 3.11 或更高版本；
 - [uv](https://docs.astral.sh/uv/)；
 - Git；
-- Node.js 22+ 与 npm
+- Chrome 或 Edge（只有真实跑 `run` / `course list` 时才用到）
 
-macOS 可用 `brew install git node uv`；Windows 可按 README 用 `winget` 安装。
+macOS 可用 `brew install git uv`；Windows 可按 README 用 `winget` 安装。
 
 初始化并安装开发依赖：
 
@@ -54,7 +54,7 @@ uv run pyright
 - pytest；
 - 干净容器中的安装冒烟测试。
 
-启动 Steel、登录 Blackboard 和真实下载不属于默认离线测试范围。修改相关逻辑时，请在本地补充可重复的手工验证步骤。
+启动浏览器、登录 Blackboard 和真实下载不属于默认离线测试范围。修改相关逻辑时，请在本地补充可重复的手工验证步骤。
 
 ## 提交习惯
 

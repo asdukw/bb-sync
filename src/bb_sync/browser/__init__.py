@@ -1,4 +1,4 @@
-"""浏览器后端：Steel（独立进程 + CDP）。"""
+"""浏览器后端：直接驱动本机 Chrome / Edge（分离进程 + CDP）。"""
 
 from __future__ import annotations
 

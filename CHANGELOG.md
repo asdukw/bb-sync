@@ -2,6 +2,37 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.0.0] — 2026-10-14
+
+### 变更（破坏性）
+
+- **移除 Steel 浏览器后端，改用本机已装的 Chrome / Edge**（没有 Chrome 时自动回退
+  Edge），通过 CDP 驱动。不再需要 Node.js / npm，首次运行也不再从 GitHub 下载
+  约 90 MB 源码再跑 `npm install`——此前首次准备要几分钟、安装目录约 700 MB，
+  现在这些全部省掉，且不再依赖 github.com 可达。
+- 浏览器以**分离进程**运行——独立于 CLI 存活，命令跑到一半关掉终端也不会被带走——
+  但**跑完会自动关闭**，成功或失败都不留后台进程。保留状态下的冷启动 0.3 秒、
+  复用 0.01 秒（本机实测）。
+- **登录态位置变更**：profile 改存 `~/.bb-sync/.browser-profile/<chrome|edge>`，
+  登录态仍跨次运行保留；旧目录 `steel-chrome` 不再使用，升级后需要重新登录一次。
+- `bb-sync doctor` 去掉 Node.js / npm 两项（现在只依赖浏览器），网络项改为探测
+  Blackboard 站点本身——原来探 github.com 只是为了下载 Steel。
+- 旧版 `~/.bb-sync/.steel` 目录如仍存在，`bb-sync doctor` 会提示手动删除以释放空间。
+
+### 新增
+
+- `--keep-open`（`run` / `due` / `course list`）：跑完保留后台浏览器，供手动过 MFA、
+  连续多次运行或调试；配套 `bb-sync browser status` 查看状态、`bb-sync browser stop`
+  关闭（登录态保留在 profile，下次同步会自动重启）。
+- 抹掉 `navigator.webdriver`：浏览器一旦开启远程调试端口，这个值就是 true，
+  站点常据此判定「被自动化控制」；现在通过 init script 处理，与旧后端的反检测
+  能力保持对齐。
+
+### 测试
+
+- 删除 Steel 部署 / 回滚 / 锚点相关用例，新增浏览器探测、启动参数、端口文件解析、
+  实例复用与显示模式切换、CDP 关闭等用例；`doctor` 的检查项回归防线同步更新。
+
 ## [1.10.0] — 2026-10-14
 
 ### 新增

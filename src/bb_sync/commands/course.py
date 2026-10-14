@@ -14,6 +14,9 @@ app = typer.Typer(help="课程操作（列出可同步的课程）", no_args_is_
 def list_cmd(
     ctx: typer.Context,
     course: list[str] = typer.Option(None, "--course", help="只看指定课程代码（可多次）"),
+    keep_open: bool = typer.Option(
+        False, "--keep-open", help="跑完保留后台浏览器（手动过 MFA / 调试用）"
+    ),
 ) -> None:
     """列出账号下可同步的课程（不下载任何文件）。"""
     app_ctx: Context = ctx.obj
@@ -27,6 +30,7 @@ def list_cmd(
         headed=False,
         dry_run=True,
         courses=course or None,
+        keep_open=keep_open,
     )
     courses = service.list_courses(options)
     records = [c.as_dict() for c in courses]

@@ -14,7 +14,7 @@ from bb_sync.core.errors import EnvironmentError_
 
 #: 模块对应的子命令名（供 cli.LazyGroup 识别）
 SUBCOMMAND = "doctor"
-HELP = "体检：检查前置条件（git / Node / 浏览器 / 网络等）"
+HELP = "体检：检查前置条件（浏览器 / 网络 / 凭据等）"
 
 #: 单命令 Typer app：借 Typer 从函数签名推导参数，随后由 cli 层取出那条命令平铺
 app = typer.Typer(help=HELP, add_completion=False)

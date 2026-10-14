@@ -84,7 +84,7 @@ Blackboard 上的东西散在「课程内容」「作业」「公告」几个入
 
 ## 安装
 
-需要 Git、Node.js 22+（含 npm）、uv 和 Chrome 或 Edge。bb-sync 会自动探测常见安装位置。
+需要 uv 和 Chrome 或 Edge。bb-sync 会自动探测常见安装位置，Windows 自带的 Edge 直接可用。
 
 ### Windows
 
@@ -92,9 +92,10 @@ Blackboard 上的东西散在「课程内容」「作业」「公告」几个入
 
 ```powershell
 winget install --id Git.Git -e
-winget install --id OpenJS.NodeJS.LTS -e
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
+
+（Git 只在「从 GitHub 安装」时需要，走 PyPI 安装可以跳过。）
 
 Windows 自带的 Edge 即可使用；也可以自行安装 Google Chrome。
 
@@ -103,7 +104,7 @@ Windows 自带的 Edge 即可使用；也可以自行安装 Google Chrome。
 推荐先安装 [Homebrew](https://brew.sh/)，再执行：
 
 ```bash
-brew install git node uv
+brew install git uv
 brew install --cask google-chrome
 ```
 
@@ -124,7 +125,7 @@ bb-sync doctor
 uv tool install git+https://github.com/asdukw/cuhk-shenzhen-blackboard-sync
 ```
 
-`bb-sync doctor` 用于检查环境；刚安装时凭据或浏览器后端显示“未配置”是正常的。如果提示找不到 `bb-sync`，执行 `uv tool update-shell` 后重开终端。校外使用 Blackboard 时，可能需要先连接学校 VPN。
+`bb-sync doctor` 用于检查环境；刚安装时凭据显示“未配置”、浏览器后端显示“未运行”都是正常的。如果提示找不到 `bb-sync`，执行 `uv tool update-shell` 后重开终端。校外使用 Blackboard 时，可能需要先连接学校 VPN。
 
 ## 首次使用
 
@@ -142,11 +143,15 @@ bb-sync auth login
 bb-sync run --headed
 ```
 
-首次运行会自动准备浏览器后端，可能需要几分钟。保持网络连接，不要提前关闭终端。之后同步直接运行：
+这条命令会用你机器上的 Chrome（没有则用 Edge）打开一个窗口，登录一次即可。之后同步直接运行：
 
 ```bash
 bb-sync run
 ```
+
+浏览器默认在**后台无窗口**运行，**跑完自动关闭**，不会在你机器上留下进程。登录态存在 `~/.bb-sync/.browser-profile/` 下、跨次运行保留，所以不必每次登录。
+
+需要把窗口留在屏幕上时（手动过 MFA、或想连续跑几条命令）加 `--keep-open`，之后再 `bb-sync browser stop` 关闭。
 
 ## 文件位置
 
@@ -179,12 +184,15 @@ Windows 也可以使用 `bb-sync config set root "D:/University/courses"`。更�
 | `bb-sync run --headed` | 显示浏览器，适合首次登录或 MFA |
 | `bb-sync run --course CSC5010` | 只同步指定课程，可重复使用 |
 | `bb-sync run --dry-run` | 预览下载和待办，不写文件 |
+| `bb-sync run --keep-open` | 跑完保留后台浏览器（手动过 MFA / 连着跑多条命令） |
 | `bb-sync due` | 扫描全部课程主页的 Due / To Do 与公告测验、考试，生成 `due.md` |
 | `bb-sync due --course CSC5010` | 只整理指定课程的待办 |
 | `bb-sync course list` | 列出账号下的课程 |
 | `bb-sync auth login` / `logout` / `status` | 录入、删除、查看已保存的凭据 |
 | `bb-sync config show` | 显示配置文件内容 |
 | `bb-sync config set <键> <值>` | 修改配置；另有 `get` / `unset` / `edit` / `path` / `init` |
+| `bb-sync browser status` | 查看后台浏览器是否在运行（`--keep-open` 留下的实例） |
+| `bb-sync browser stop` | 关闭后台浏览器（登录态保留） |
 | `bb-sync doctor` | 检查环境是否就绪 |
 | `bb-sync --help` | 查看完整帮助 |
 
@@ -192,7 +200,7 @@ Windows 也可以使用 `bb-sync config set root "D:/University/courses"`。更�
 
 - **`bb-sync` 找不到**：重开终端，或执行 `uv tool update-shell`。
 - **环境检查不通过**：按 `bb-sync doctor` 的提示安装或配置缺失项。
-- **第一次运行很慢**：首次需要准备浏览器后端，耐心等待。
+- **想留住浏览器窗口**：默认跑完会自动关；加 `--keep-open` 才会保留，之后用 `bb-sync browser status` 看状态、`bb-sync browser stop` 关闭（不影响登录态）。
 - **登录失败或需要 MFA**：运行 `bb-sync auth status` 查看凭据，再用 `bb-sync run --headed` 重试。
 - **更换密码**：重新运行 `bb-sync auth login`。
 

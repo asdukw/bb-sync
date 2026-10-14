@@ -12,7 +12,7 @@
     4  CONFIG_ERROR      配置文件问题
     5  NETWORK_ERROR     网络 / 代理 / 下载失败
     6  NOT_FOUND         目标资源不存在
-    7  ENVIRONMENT_ERROR 依赖缺失（Node / 浏览器 / Steel 等）
+    7  ENVIRONMENT_ERROR 依赖缺失（浏览器等）
     8  INTERRUPTED       用户中断（Ctrl+C）
 """
 
@@ -77,7 +77,7 @@ class NotFoundError(BbSyncError):
 
 
 class EnvironmentError_(BbSyncError):
-    """运行环境不满足（Node / npm / 浏览器 / Steel 未就绪）。
+    """运行环境不满足（未找到浏览器、浏览器启动失败 / 超时等）。
 
     名字带下划线后缀，避免与内置 :class:`EnvironmentError` 混淆。
     """

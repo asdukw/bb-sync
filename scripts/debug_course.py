@@ -14,7 +14,7 @@ from playwright.sync_api import sync_playwright
 
 from bb_sync.blackboard.login import ensure_login
 from bb_sync.blackboard.models import BASE
-from bb_sync.browser import steel
+from bb_sync.browser import launcher
 from bb_sync.core.output import Console
 from bb_sync.paths import BB_SYNC_HOME
 
@@ -23,10 +23,9 @@ COURSE_ID = sys.argv[1] if len(sys.argv) > 1 else "_18482_1"  # CSC5010
 
 
 def main() -> None:
-    steel.ensure_server(console)
-    session = steel.create_session(console=console)
+    session = launcher.ensure_browser(console)
     with sync_playwright() as p:
-        browser, ctx, page = steel.connect(p, session)
+        browser, ctx, page = launcher.connect(p, session)
         ensure_login(page, console)
 
         for label, url in [
@@ -72,9 +71,7 @@ def main() -> None:
             for link in interesting[:20]:
                 console.log(f"        {link[:150]}")
 
-        ctx.close()
-        browser.close()
-    steel.release_session(session, console)
+        # 调试脚本故意不关浏览器（方便接着看现场）；用完 bb-sync browser stop 关闭
 
 
 if __name__ == "__main__":

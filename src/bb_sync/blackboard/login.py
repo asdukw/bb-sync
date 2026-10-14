@@ -87,7 +87,8 @@ def do_login(page: Page, username: str, password: str) -> None:
         raise AuthError(
             f"登录失败（当前 URL: {_safe_url(page)}）：{detail}",
             f"已保存登录现场到 {home}（debug_login.png / debug_login.html）。"
-            "若页面停在 ADFS / MFA / 验证码，请用 bb-sync run --headed 手动完成；"
+            "若页面停在 ADFS / MFA / 验证码，请用 bb-sync run --headed --keep-open 手动完成"
+            "（--keep-open 让浏览器在命令结束后留在屏幕上）；"
             f"若怀疑是登录流程改版或 bb-sync 的问题，欢迎到 {ISSUES_URL} 提 issue，"
             "并附上 debug_login.html（以及上面这行 URL）。",
         ) from exc
@@ -161,7 +162,7 @@ def resolve_credentials(console: Console) -> Credentials:
 def ensure_login(page: Page, console: Console, *, headed: bool = False) -> None:
     """确保处于登录态（复用 profile → 静默登录 → 有头模式等人工过 MFA）。"""
     if is_logged_in(page):
-        console.log("[login] 已有有效登录态（复用 Steel profile）")
+        console.log("[login] 已有有效登录态（复用浏览器 profile）")
         return
 
     creds = resolve_credentials(console)

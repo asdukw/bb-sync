@@ -5,7 +5,7 @@
 - :mod:`bb_sync.cli`            Typer 命令行入口
 - :mod:`bb_sync.core`           配置、输出、异常等基础设施
 - :mod:`bb_sync.blackboard`     Blackboard 站点交互（登录 / 抓取 / 下载）
-- :mod:`bb_sync.browser`        Steel 浏览器后端
+- :mod:`bb_sync.browser`        本机浏览器后端（分离进程 + CDP）
 """
 
 from __future__ import annotations

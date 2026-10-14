@@ -2,7 +2,7 @@
 
 这一层是 CLI 与站点抓取之间的胶水，负责：
 - 把 :class:`~bb_sync.core.config.Settings` 转成具体执行参数
-- 驱动 Steel 会话的生命周期（起服务、建会话、接入 CDP、释放）
+- 驱动浏览器实例的生命周期（复用/启动分离的 Chrome/Edge、接入 CDP）
 - 逐课程推进并把结果汇总成 :class:`SyncStats`
 
 本层不直接 ``print``：全部通过注入的 :class:`~bb_sync.core.output.Console`。
@@ -20,7 +20,7 @@ from playwright.sync_api import sync_playwright
 from bb_sync.blackboard import downloader, scraper
 from bb_sync.blackboard.login import ensure_login
 from bb_sync.blackboard.models import Course, DueItem, DueStats, FileItem, SyncStats
-from bb_sync.browser import steel
+from bb_sync.browser import launcher
 from bb_sync.core import due
 from bb_sync.core.config import Settings
 from bb_sync.core.errors import ConfigError, NetworkError, NotFoundError
@@ -38,6 +38,8 @@ class SyncOptions:
     headed: bool = False
     dry_run: bool = False
     courses: list[str] | None = None
+    #: 跑完保留后台浏览器（默认跑完就关）
+    keep_open: bool = False
 
 
 @dataclass
@@ -49,6 +51,8 @@ class DueOptions:
     console: Console
     headed: bool = False
     courses: list[str] | None = None
+    #: 跑完保留后台浏览器（默认跑完就关）
+    keep_open: bool = False
 
 
 @dataclass
@@ -256,61 +260,55 @@ def run_sync(options: SyncOptions) -> SyncStats:
     explicit_dirs = settings.course_dirs
     stats = SyncStats()
 
-    # ---- Steel 后端：独立进程、静默无窗口、登录态持久化在 profile ----
-    steel.ensure_server(console, options.headed)
-    session = steel.create_session(options.headed, console)
+    # ---- 浏览器：独立 profile，登录态跨次运行保留；跑完默认自动关闭 ----
+    scope = launcher.browser_session(console, headed=options.headed, keep_open=options.keep_open)
 
-    try:
-        with sync_playwright() as p:
-            browser, ctx, page = steel.connect(p, session)
-            console.debug(f"[steel] CDP 已接入 (UA: {ctx.browser.version if ctx.browser else '?'})")
+    with scope as session, sync_playwright() as p:
+        pw_browser, ctx, page = launcher.connect(p, session)
+        console.debug(f"[browser] CDP 已接入 (UA: {ctx.browser.version if ctx.browser else '?'})")
 
-            ensure_login(page, console, headed=options.headed)
+        ensure_login(page, console, headed=options.headed)
 
-            courses = scraper.scrape_courses(page, include, console)
-            if not courses:
-                raise NotFoundError(
-                    "未发现课程",
-                    "确认已登录且账号下有课程；也可用 bb-sync course list 先看看",
-                )
+        courses = scraper.scrape_courses(page, include, console)
+        if not courses:
+            raise NotFoundError(
+                "未发现课程",
+                "确认已登录且账号下有课程；也可用 bb-sync course list 先看看",
+            )
 
-            # 先算出每门课的落盘目录并整体打印，再逐门开始下载
-            for course in courses:
-                course.slug = folder_name(course, explicit_dirs)
-            _print_plan(console, courses, options.root, options.dry_run)
+        # 先算出每门课的落盘目录并整体打印，再逐门开始下载
+        for course in courses:
+            course.slug = folder_name(course, explicit_dirs)
+        _print_plan(console, courses, options.root, options.dry_run)
 
-            downloads = downloader.DownloadSession(page, ctx.request)
-            for course in courses:
-                stats.courses.append(course.code or course.title)
-                sync_course(page, course, options.root / course.slug, options, stats, downloads)
+        downloads = downloader.DownloadSession(page, ctx.request)
+        for course in courses:
+            stats.courses.append(course.code or course.title)
+            sync_course(page, course, options.root / course.slug, options, stats, downloads)
 
-            scan = _scan_due_items(page, courses, console)
-            due_items = scan.items
-            due_path = options.root / "due.md"
-            if options.dry_run:
-                if scan.both_failed == len(courses):
-                    message = "待办抓取全部失败"
-                elif not due_items and not scan.incomplete:
-                    message = "Congratulations! 没有待办"
-                else:
-                    message = f"待办 {len(due_items)} 项"
-                console.log(f"[due] {message}（dry-run，未写入 due.md）")
-            elif scan.both_failed == len(courses):
-                console.warn("[due] 所有课程待办抓取失败，保留现有 due.md")
+        scan = _scan_due_items(page, courses, console)
+        due_items = scan.items
+        due_path = options.root / "due.md"
+        if options.dry_run:
+            if scan.both_failed == len(courses):
+                message = "待办抓取全部失败"
+            elif not due_items and not scan.incomplete:
+                message = "Congratulations! 没有待办"
             else:
-                due.write_due_markdown(due_path, courses, due_items, failed=scan.incomplete)
-                if due_items:
-                    console.log(f"[due] {len(due_items)} 项 → due.md")
-                elif scan.incomplete:
-                    console.log("[due] 未读取到待办（部分课程失败）→ due.md")
-                else:
-                    console.log("[due] Congratulations! 没有待办 → due.md")
+                message = f"待办 {len(due_items)} 项"
+            console.log(f"[due] {message}（dry-run，未写入 due.md）")
+        elif scan.both_failed == len(courses):
+            console.warn("[due] 所有课程待办抓取失败，保留现有 due.md")
+        else:
+            due.write_due_markdown(due_path, courses, due_items, failed=scan.incomplete)
+            if due_items:
+                console.log(f"[due] {len(due_items)} 项 → due.md")
+            elif scan.incomplete:
+                console.log("[due] 未读取到待办（部分课程失败）→ due.md")
+            else:
+                console.log("[due] Congratulations! 没有待办 → due.md")
 
-            ctx.close()
-            browser.close()
-    finally:
-        steel.release_session(session, console)
-
+    # 浏览器由 browser_session 收尾：默认已关闭（--keep-open 则留在后台）
     _print_summary(console, stats, options.dry_run)
     if scan.both_failed < len(courses):
         _print_due_details(console, due_items, scan.incomplete)
@@ -356,20 +354,14 @@ def _print_due_details(
 def list_courses(options: SyncOptions) -> list[Course]:
     """仅列出课程（不下载），供 ``bb-sync course list`` 使用。"""
     console = options.console
-    steel.ensure_server(console, options.headed)
-    session = steel.create_session(options.headed, console)
-    try:
-        with sync_playwright() as p:
-            browser, ctx, page = steel.connect(p, session)
-            ensure_login(page, console, headed=options.headed)
-            include = options.courses if options.courses else "all"
-            courses = scraper.scrape_courses(page, include, console)
-            for course in courses:
-                course.slug = folder_name(course, options.settings.course_dirs)
-            ctx.close()
-            browser.close()
-    finally:
-        steel.release_session(session, console)
+    scope = launcher.browser_session(console, headed=options.headed, keep_open=options.keep_open)
+    with scope as session, sync_playwright() as p:
+        _pw_browser, _ctx, page = launcher.connect(p, session)
+        ensure_login(page, console, headed=options.headed)
+        include = options.courses if options.courses else "all"
+        courses = scraper.scrape_courses(page, include, console)
+        for course in courses:
+            course.slug = folder_name(course, options.settings.course_dirs)
     return courses
 
 
@@ -384,42 +376,36 @@ def run_due(options: DueOptions) -> DueStats:
     include = options.courses if options.courses else settings.include
     stats = DueStats(path=str(options.root / "due.md"))
 
-    steel.ensure_server(console, options.headed)
-    session = steel.create_session(options.headed, console)
-    try:
-        with sync_playwright() as p:
-            browser, ctx, page = steel.connect(p, session)
-            ensure_login(page, console, headed=options.headed)
+    scope = launcher.browser_session(console, headed=options.headed, keep_open=options.keep_open)
+    with scope as session, sync_playwright() as p:
+        _pw_browser, _ctx, page = launcher.connect(p, session)
+        ensure_login(page, console, headed=options.headed)
 
-            courses = scraper.scrape_courses(page, include, console)
-            if not courses:
-                raise NotFoundError(
-                    "未发现课程",
-                    "确认已登录且账号下有课程；也可用 bb-sync course list 先看看",
-                )
-
-            stats.courses = [course.code or course.title for course in courses]
-            scan = _scan_due_items(page, courses, console)
-            stats.failed = scan.todo_failed
-            stats.announcement_failed = scan.announcement_failed
-
-            if scan.both_failed == len(courses):
-                raise NetworkError(
-                    "所有课程的待办与公告都抓取失败",
-                    "检查网络连接与登录状态，或先用 bb-sync run --headed 刷新登录态",
-                )
-
-            stats.items = scan.items
-            due.write_due_markdown(
-                options.root / "due.md",
-                courses,
-                scan.items,
-                failed=scan.incomplete,
+        courses = scraper.scrape_courses(page, include, console)
+        if not courses:
+            raise NotFoundError(
+                "未发现课程",
+                "确认已登录且账号下有课程；也可用 bb-sync course list 先看看",
             )
-            ctx.close()
-            browser.close()
-    finally:
-        steel.release_session(session, console)
+
+        stats.courses = [course.code or course.title for course in courses]
+        scan = _scan_due_items(page, courses, console)
+        stats.failed = scan.todo_failed
+        stats.announcement_failed = scan.announcement_failed
+
+        if scan.both_failed == len(courses):
+            raise NetworkError(
+                "所有课程的待办与公告都抓取失败",
+                "检查网络连接与登录状态，或先用 bb-sync run --headed 刷新登录态",
+            )
+
+        stats.items = scan.items
+        due.write_due_markdown(
+            options.root / "due.md",
+            courses,
+            scan.items,
+            failed=scan.incomplete,
+        )
 
     console.rule("待办汇总")
     console.log(f"发现 {stats.total} 项待办，已写入 {stats.path}")

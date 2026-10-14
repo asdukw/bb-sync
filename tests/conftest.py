@@ -76,14 +76,13 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Pa
     # 默认关闭自动更新检查：测试不能触网；需要验证提示的用例可显式删掉该变量。
     monkeypatch.setenv("BB_SYNC_NO_UPDATE_CHECK", "1")
 
-    # Steel 装在 BB_SYNC_HOME/.steel；显式对齐模块常量，避免测试碰真实安装目录。
-    steel_root = home / ".steel"
-    from bb_sync.browser import steel
+    # 浏览器 profile / 运行状态都在 BB_SYNC_HOME 下，显式对齐模块常量，
+    # 避免测试探测或写到真实实例的 profile。
+    from bb_sync.browser import launcher
 
-    monkeypatch.setattr(steel, "STEEL_ROOT", steel_root)
-    monkeypatch.setattr(steel, "STEEL_DIR", steel_root / "api")
-    monkeypatch.setattr(steel, "STEEL_LOG", steel_root / "steel.log")
-    monkeypatch.setattr(steel, "PROFILE_DIR", home / ".browser-profile" / "steel-chrome")
+    monkeypatch.setattr(launcher, "PROFILE_ROOT", home / ".browser-profile")
+    monkeypatch.setattr(launcher, "STATE_FILE", home / ".browser-profile" / "session.json")
+    monkeypatch.setattr(launcher, "BROWSER_LOG", home / "browser.log")
     yield tmp_path
 
 

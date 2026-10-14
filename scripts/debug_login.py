@@ -12,7 +12,7 @@ import re
 from playwright.sync_api import sync_playwright
 
 from bb_sync.blackboard.models import LOGIN_URL
-from bb_sync.browser import steel
+from bb_sync.browser import launcher
 from bb_sync.core.output import Console
 from bb_sync.creds import load_credentials
 from bb_sync.paths import BB_SYNC_HOME
@@ -45,10 +45,9 @@ def dump(page, tag: str) -> None:
 
 
 def main() -> None:
-    steel.ensure_server(console)
-    session = steel.create_session(console=console)
+    session = launcher.ensure_browser(console)
     with sync_playwright() as p:
-        browser, ctx, page = steel.connect(p, session)
+        browser, ctx, page = launcher.connect(p, session)
         page.goto(LOGIN_URL, wait_until="domcontentloaded")
         dump(page, "01_bb_login")
 
@@ -70,9 +69,7 @@ def main() -> None:
 
         page.wait_for_timeout(5000)
         dump(page, "07_final")
-        ctx.close()
-        browser.close()
-    steel.release_session(session, console)
+        # 调试脚本故意不关浏览器（方便接着看现场）；用完 bb-sync browser stop 关闭
 
 
 if __name__ == "__main__":

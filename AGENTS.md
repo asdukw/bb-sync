@@ -13,7 +13,8 @@
   PowerShell 与 zsh / bash。
 - **技术栈**：Python ≥3.11；Typer + Click（CLI）、pydantic v2（配置）、PyYAML、rich（输出）、
   keyring（凭据）、Playwright（浏览器自动化）。
-- **浏览器后端**：Steel——本地 Node ≥22 服务，通过 CDP 接入，Chrome profile 持久化登录态。
+- **浏览器后端**：直接驱动本机已装的 Chrome / Edge——分离进程 + CDP + 持久 profile，
+  不引入 Node / npm 等额外运行时（也不要为此加回任何需要联网下载的浏览器依赖）。
 - **打包**：hatchling，`src/` 布局，入口 `bb-sync = bb_sync.cli:main`。
 - **语言**：代码注释、docstring、提交信息、用户文档一律中文。安装与路径示例同时覆盖
   Windows PowerShell 和 macOS zsh / bash。
@@ -26,10 +27,10 @@
 | `src/bb_sync/context.py` | 全局 Context（`--json/--quiet/--verbose/--config`），惰性导入 |
 | `src/bb_sync/paths.py` | `BB_SYNC_HOME`（默认 `~/.bb-sync`）与配置文件查找 |
 | `src/bb_sync/creds.py` | keyring 凭据读写 |
-| `src/bb_sync/commands/` | 子命令：run / doctor / config / auth / course |
+| `src/bb_sync/commands/` | 子命令：run / due / doctor / config / auth / course / browser |
 | `src/bb_sync/core/` | config（分层加载）、config_store（行级 YAML 编辑）、service（同步编排）、doctor、output（Console）、errors（退出码） |
 | `src/bb_sync/blackboard/` | login（ADFS SSO）、scraper（列表 / 内容抓取）、downloader、models |
-| `src/bb_sync/browser/steel.py` | Steel 后端定位 / 安装 / 启动、CDP 会话、持久 profile |
+| `src/bb_sync/browser/launcher.py` | 本机浏览器探测 / 分离启动 / CDP 接入、持久 profile |
 | `tests/` | 全部离线：`test_units.py`（纯逻辑）+ `test_cli_e2e.py`（进程内 CLI 契约） |
 | `scripts/debug_*.py` | 手工调试脚本，会真实登录 / 访问站点；不属于测试，不要在 CI 或非必要时运行 |
 
@@ -47,9 +48,9 @@ uv run bb-sync doctor      # 环境体检（触网；诊断走 stderr）
 ```
 
 以上命令在 Windows PowerShell 与 macOS zsh / bash 中相同。macOS 前置依赖可用
-`brew install git node uv` 安装。
+`brew install git uv` 安装。
 
-只有真实运行 `run` / `course list` / `doctor`（未加 `--skip-network`）才需要 Node ≥22、
+只有真实运行 `run` / `course list` / `doctor`（未加 `--skip-network`）才需要本机的
 Chrome 或 Edge 和真实凭据；测试与质量检查完全离线。
 
 ### 提交前质量门禁（改动必须全绿）
@@ -90,17 +91,29 @@ CLI 参数 > `BB_SYNC_<KEY>` 环境变量 > config.yaml > 内置默认。
 `config set/unset` 通过 `core/config_store.py` 做**行级编辑**，必须保留注释与未知键；
 不要改成整份 YAML 重写。路径常量在 import 时快照，测试靠 monkeypatch 覆盖。
 
-### 5. Steel 后端锚定快照
+### 5. 浏览器后端：分离进程 + 自有 profile
 
-`browser/steel.py` 的 `STEEL_REF` 固定到验证过的 commit，不追随上游 `main`；
-升级方式 = 改 `STEEL_REF` 并在 `CHANGELOG.md` 记录。
-Steel 安装目录只能是 `BB_SYNC_HOME/.steel`，任何情况下不读写用户家目录的 `~/.steel`。
+浏览器就是用户机器上的 Chrome / Edge，由 `browser/launcher.py` 以
+`--remote-debugging-port=0` 拉起，Playwright 只当 CDP 客户端。四条不能破的约束：
+
+- **跑完自动关**：默认命令结束（成功或失败）就关掉浏览器，不留后台进程。
+  `browser_session` 的 finally 负责收尾，`--keep-open` 才保留实例供手动过 MFA
+  或连续多次运行——不要在命令里留下没人管的浏览器。
+- **分离**：进程独立于 CLI 存活（Windows 用 `CREATE_NO_WINDOW|CREATE_NEW_PROCESS_GROUP`，
+  POSIX 用 `start_new_session`），命令跑到一半终端被关掉也不会把它带走，
+  `--keep-open` 保留下来的实例下次运行直接复用。
+- **端口自发现**：只认浏览器自己写下的 `DevToolsActivePort`，不要改成固定端口或自建注册表。
+- **profile 隔离**：`--user-data-dir` 只能是 `BB_SYNC_HOME/.browser-profile/<chrome|edge>`，
+  任何情况下不读不写用户日常使用的浏览器 profile。
+- **关闭方式**：只能走 CDP 的 `Browser.close`（`stop_browser`），不要按 PID 杀进程——
+  记录下来的 PID 可能已被系统回收。
 
 ## 测试要求
 
 - 默认测试套件必须离线：不登录、不下载、不起浏览器、不碰真实钥匙串。
-  `tests/conftest.py` 自动隔离 `BB_SYNC_HOME`、CWD、keyring 与 Steel 路径——
-  新测试直接依赖既有 fixture（`cli`、`config_file` 等），不要连接真实环境。
+  `tests/conftest.py` 自动隔离 `BB_SYNC_HOME`、CWD、keyring 与浏览器 profile 路径——
+  新测试直接依赖既有 fixture（`cli`、`config_file` 等），不要连接真实环境，
+  更不要在测试里真的拉起浏览器进程。
 - 新行为要带测试：纯逻辑进 `tests/test_units.py`，CLI 契约 / 退出码 / 输出分流进 `tests/test_cli_e2e.py`。
 - 真实站点逻辑（登录、抓取、下载）无法离线覆盖时，在提交信息或 PR 里写清可重复的手工验证步骤。
 
@@ -126,5 +139,7 @@ Steel 安装目录只能是 `BB_SYNC_HOME/.steel`，任何情况下不读写用�
 - GitHub Actions 的 run 默认 `set -e`，断言非零退出码需用 `|| true` 兜住（见 `ci.yml` 注释）。
 - Windows 与 macOS 是主要目标平台，CI 同时跑 Ubuntu、macOS 与 Windows；路径、后台进程和
   浏览器探测相关改动两个平台都要考虑。
-- 首次准备 Steel 需从 GitHub / npm 拉依赖，国内网络慢时可临时用代理或镜像，不要写永久全局配置。
+- 浏览器后端不需要任何联网安装步骤；如果哪天又引入需要下载的组件，先想清楚国内网络下的代价。
+- 关闭后台浏览器只能走 CDP（`browser stop`）；直接 kill 浏览器进程会留下失效的
+  `DevToolsActivePort`，虽然下次启动会清掉，但 profile 可能没落盘。
 - 下载目录默认 `~/courses`，课程资料有版权；禁止提交或外传 `courses/`、`.workbuddy/` 内容。

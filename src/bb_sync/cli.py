@@ -38,10 +38,11 @@ from bb_sync.core.help import apply_help_style
 SUBCOMMANDS: dict[str, tuple[str, str]] = {
     "run": ("run", "执行一次课程同步"),
     "due": ("due", "整理全部课程的待办到 due.md"),
-    "doctor": ("doctor", "体检：检查前置条件（git / Node / 浏览器 / 网络等）"),
+    "doctor": ("doctor", "体检：检查前置条件（浏览器 / 网络 / 凭据等）"),
     "config": ("config", "查看 / 修改配置（如默认下载目录）"),
     "auth": ("auth", "凭据管理：登录录入 / 退出 / 查看状态"),
     "course": ("course", "课程操作（列出可同步的课程）"),
+    "browser": ("browser", "浏览器后端：查看状态 / 关闭后台实例"),
 }
 
 #: 扁平命令（无下级子命令）：模块里直接定义 ``<name>_cmd`` 函数，
@@ -212,7 +213,7 @@ def _build_cli() -> LazyGroup:
         cls=LazyGroup,
         name="bb-sync",
         result_callback=_notify_update_after_command,
-        help="Blackboard 课程资源自动同步（ADFS SSO + Steel 浏览器后端）。",
+        help="Blackboard 课程资源自动同步（ADFS SSO + 本机 Chrome/Edge）。",
         invoke_without_command=True,
         # 不用 no_args_is_help：那会让「无参数」以退出码 2 结束。
         # 本工具约定无参数 = 显示帮助 + 退出码 0（见下方回调）。

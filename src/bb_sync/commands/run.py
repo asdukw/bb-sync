@@ -22,6 +22,7 @@ HELP = """执行一次课程同步并更新 due.md（下载目录取配置里的
   bb-sync run --course CSC5010       只同步指定课程并更新对应待办（可重复）
   bb-sync run --dry-run              预览下载和待办，不写文件
   bb-sync run --headed               有头模式（首次登录 / 需要人工过 MFA）
+  bb-sync run --headed --keep-open   跑完保留浏览器窗口，便于手动完成验证
   bb-sync run --json                 输出机器可读 JSON，便于脚本消费
 """
 
@@ -38,6 +39,9 @@ def run(
         None, "--course", help="只同步指定课程代码（可多次），如 --course CSC5010"
     ),
     root: str = typer.Option(None, "--root", help="本次同步的下载目录（临时覆盖配置里的 root）"),
+    keep_open: bool = typer.Option(
+        False, "--keep-open", help="跑完保留后台浏览器（手动过 MFA / 调试用）"
+    ),
 ) -> None:
     """执行一次课程同步并更新待办清单。"""
     app_ctx: Context = ctx.obj
@@ -64,6 +68,7 @@ def run(
         headed=headed,
         dry_run=dry_run,
         courses=course or None,
+        keep_open=keep_open,
     )
     stats = service.run_sync(options)
 

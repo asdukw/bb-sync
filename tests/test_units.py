@@ -341,322 +341,377 @@ def test_macos_unmounted_volume_is_unavailable(monkeypatch) -> None:
     assert service._drive_available(root) is False
 
 
-# ---------------------------------------------------------------- Steel 安装目录
+# ---------------------------------------------------------------- 浏览器后端
 
 
-def _fake_steel_install(root: Path, marker: str) -> None:
-    """造一份「源码 + tsx 都已就位」的假 Steel 安装。"""
-    src = root / "api" / "src"
-    tsx = root / "node_modules" / "tsx" / "dist"
-    src.mkdir(parents=True, exist_ok=True)
-    tsx.mkdir(parents=True, exist_ok=True)
-    (src / "index.ts").write_text("// fake steel\n", encoding="utf-8")
-    (tsx / "cli.mjs").write_text("// fake tsx\n", encoding="utf-8")
-    (root / "marker.txt").write_text(marker, encoding="utf-8")
+def _launcher_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """把 launcher 的运行期文件指到临时目录，避免碰真实 profile / 状态文件。"""
+    from bb_sync.browser import launcher
+
+    monkeypatch.setattr(launcher, "PROFILE_ROOT", tmp_path / "profile")
+    monkeypatch.setattr(launcher, "STATE_FILE", tmp_path / "session.json")
+    monkeypatch.setattr(launcher, "BROWSER_LOG", tmp_path / "browser.log")
+    return launcher
 
 
-def _point_steel_at(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
-    from bb_sync.browser import steel
-
-    monkeypatch.setattr(steel, "STEEL_ROOT", root)
-    monkeypatch.setattr(steel, "STEEL_DIR", root / "api")
-    monkeypatch.setattr(steel, "STEEL_LOG", root / "steel.log")
+def _counting_clock():
+    """每次调用前进 1 秒的假时钟，让等待循环迅速跑完。"""
+    ticks = iter(range(1000))
+    return lambda: next(ticks)
 
 
-def _forbid_node(monkeypatch: pytest.MonkeyPatch) -> None:
-    """复用已就绪的安装时不应再检查 Node/npm，更不应触网重装。"""
-    from bb_sync.browser import steel
+def test_browser_candidates_put_chrome_first(monkeypatch) -> None:
+    """候选顺序里 Chrome 排在 Edge 前面（两个都装时用 Chrome）。"""
+    from bb_sync.browser import launcher
 
-    def no_node() -> str:
-        raise AssertionError("复用已就绪的后端时不应检查 Node.js")
+    names = [name for name, _ in launcher._browser_candidates()]
+    assert names.count("chrome") > 0 and names.count("edge") > 0
+    assert names == sorted(names, key=lambda name: 0 if name == "chrome" else 1)
 
-    monkeypatch.setattr(steel, "_node_bin", no_node)
 
+def test_detect_browser_picks_first_existing(monkeypatch, tmp_path: Path) -> None:
+    """探测按候选顺序取第一个真实存在的可执行文件。"""
+    from bb_sync.browser import launcher
 
-def _write_old_anchor_meta(root: Path) -> None:
-    """把安装标记成「旧锚点」，触发一次替换更新。"""
-    import json
-
-    (root / ".bb-sync.json").write_text(
-        json.dumps({"tool": "bb-sync", "schema": 1, "zip_url": "https://example.com/old.zip"}),
-        encoding="utf-8",
+    chrome = tmp_path / "chrome.exe"
+    edge = tmp_path / "msedge.exe"
+    edge.write_text("", encoding="utf-8")  # Chrome 缺席、Edge 在位
+    monkeypatch.delenv("CHROME_EXECUTABLE_PATH", raising=False)
+    monkeypatch.setattr(
+        launcher, "_browser_candidates", lambda: (("chrome", str(chrome)), ("edge", str(edge)))
     )
 
-
-def _stub_fresh_install(monkeypatch: pytest.MonkeyPatch, marker: str) -> dict[str, int]:
-    """把下载与 npm 安装替换成本地假安装，并统计调用次数。"""
-    from bb_sync.browser import steel
-
-    calls = {"download": 0, "npm": 0}
-
-    def fake_download(console, tmp_dir: Path) -> Path:
-        calls["download"] += 1
-        source = tmp_dir / f"steel-browser-{steel.STEEL_REF}"
-        _fake_steel_install(source, marker)
-        return source
-
-    def fake_install(npm: str, console) -> None:
-        calls["npm"] += 1
-
-    monkeypatch.setattr(steel, "_download_source", fake_download)
-    monkeypatch.setattr(steel, "_install_dependencies", fake_install)
-    monkeypatch.setattr(steel, "_npm_bin", lambda: "/fake/npm")
-    monkeypatch.setattr(steel, "_node_bin", lambda: "/fake/node")
-    return calls
+    picked = launcher.detect_browser()
+    assert picked is not None
+    assert (picked.name, picked.path) == ("edge", edge)
 
 
-def test_steel_root_is_inside_bb_sync_home() -> None:
-    """Steel 装在 BB_SYNC_HOME/.steel，不碰用户家目录的 ~/.steel。"""
+def test_detect_browser_respects_env_override(monkeypatch, tmp_path: Path) -> None:
+    """显式指定的浏览器优先，且按其文件名决定用哪个 profile 目录。"""
+    from bb_sync.browser import launcher
+
+    custom = tmp_path / "msedge.exe"
+    custom.write_text("", encoding="utf-8")
+    monkeypatch.setenv("CHROME_EXECUTABLE_PATH", str(custom))
+
+    picked = launcher.detect_browser()
+    assert picked is not None
+    assert (picked.name, picked.path) == ("edge", custom)
+    assert picked.profile_dir.name == "edge"
+
+
+def test_detect_browser_rejects_missing_override(monkeypatch, tmp_path: Path) -> None:
+    """路径写错时报错，而不是静默换成别的浏览器。"""
+    from bb_sync.browser import launcher
+    from bb_sync.core.errors import EnvironmentError_
+
+    monkeypatch.setenv("CHROME_EXECUTABLE_PATH", str(tmp_path / "missing.exe"))
+    with pytest.raises(EnvironmentError_):
+        launcher.detect_browser()
+
+
+def test_detect_browser_returns_none_without_candidates(monkeypatch) -> None:
+    from bb_sync.browser import launcher
+
+    monkeypatch.delenv("CHROME_EXECUTABLE_PATH", raising=False)
+    monkeypatch.setattr(launcher, "_browser_candidates", lambda: ())
+    assert launcher.detect_browser() is None
+
+
+def test_launch_args_headless_and_headed(monkeypatch, tmp_path: Path) -> None:
+    """无窗口模式带 --headless=new；有窗口模式不带；profile 按浏览器分目录。"""
+    launcher = _launcher_paths(monkeypatch, tmp_path)
+    browser = launcher.Browser("edge", tmp_path / "msedge.exe")
+
+    headless = launcher._launch_args(browser, headed=False)
+    headed = launcher._launch_args(browser, headed=True)
+
+    assert headless[0] == str(tmp_path / "msedge.exe")
+    assert "--headless=new" in headless
+    assert "--headless=new" not in headed
+    # 端口交给浏览器自己挑，避免固定端口被占用
+    assert "--remote-debugging-port=0" in headless
+    assert f"--user-data-dir={tmp_path / 'profile' / 'edge'}" in headless
+
+
+def test_read_port_file(tmp_path: Path) -> None:
+    """DevToolsActivePort：首行端口、次行 WebSocket 路径。"""
+    from bb_sync.browser import launcher
+
+    (tmp_path / launcher.PORT_FILE_NAME).write_text(
+        "51234\n/devtools/browser/abc\n", encoding="utf-8"
+    )
+    assert launcher._read_port_file(tmp_path) == (51234, "/devtools/browser/abc")
+
+    (tmp_path / launcher.PORT_FILE_NAME).write_text("", encoding="utf-8")
+    assert launcher._read_port_file(tmp_path) is None
+    assert launcher._read_port_file(tmp_path / "not-a-dir") is None
+
+
+def test_current_session_ignores_stale_port_file(monkeypatch, tmp_path: Path) -> None:
+    """端口文件还在、但实例已经没了：不能误判成「运行中」。"""
+    launcher = _launcher_paths(monkeypatch, tmp_path)
+    browser = launcher.Browser("chrome", tmp_path / "chrome.exe")
+    profile = tmp_path / "profile" / "chrome"
+    profile.mkdir(parents=True)
+    (profile / launcher.PORT_FILE_NAME).write_text(
+        "51234\n/devtools/browser/abc\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(launcher, "detect_browser", lambda explicit=None: browser)
+    monkeypatch.setattr(launcher, "_probe", lambda port, timeout=2.0: None)
+
+    assert launcher.current_session() is None
+
+
+def test_current_session_reads_mode_from_state(monkeypatch, tmp_path: Path) -> None:
+    """端口文件给出端口，显示模式只能从状态文件读。"""
+    launcher = _launcher_paths(monkeypatch, tmp_path)
+    browser = launcher.Browser("chrome", tmp_path / "chrome.exe")
+    profile = tmp_path / "profile" / "chrome"
+    profile.mkdir(parents=True)
+    (profile / launcher.PORT_FILE_NAME).write_text(
+        "51234\n/devtools/browser/abc\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(launcher, "detect_browser", lambda explicit=None: browser)
+    monkeypatch.setattr(launcher, "_probe", lambda port, timeout=2.0: {"Browser": "Chrome/155"})
+
+    launcher._write_state(launcher.Session(browser, 51234, "ws://x/", headed=True))
+    session = launcher.current_session()
+    assert session is not None
+    assert session.headed is True
+    assert session.mode_label == "有窗口模式"
+
+
+def test_launch_waits_for_devtools_port(monkeypatch, tmp_path: Path) -> None:
+    """_launch 以浏览器自己写的端口文件为准，确认可用后记录运行状态。"""
+    launcher = _launcher_paths(monkeypatch, tmp_path)
+    launched: list[list[str]] = []
+
+    class FakeProc:
+        pass
+
+    monkeypatch.setattr(
+        launcher.subprocess, "Popen", lambda args, **kwargs: launched.append(args) or FakeProc()
+    )
+    monkeypatch.setattr(launcher, "_read_port_file", lambda profile: (4321, "/devtools/browser/x"))
+    monkeypatch.setattr(launcher, "_probe", lambda port, timeout=2.0: {"Browser": "Chrome/155"})
+
+    browser = launcher.Browser("chrome", tmp_path / "chrome.exe")
+    session = launcher._launch(launcher._SILENT, browser, headed=False)
+
+    assert session.port == 4321
+    assert session.ws_url == "ws://127.0.0.1:4321/devtools/browser/x"
+    assert launched and "--headless=new" in launched[0]
+    assert launcher._read_state()["port"] == 4321
+
+
+def test_launch_times_out_with_actionable_hint(monkeypatch, tmp_path: Path) -> None:
+    """起不来时给可操作的错误（退出码 7），并指向日志文件。"""
+    launcher = _launcher_paths(monkeypatch, tmp_path)
+    from bb_sync.core.errors import EnvironmentError_, ExitCode
+
+    monkeypatch.setattr(launcher.subprocess, "Popen", lambda args, **kwargs: object())
+    monkeypatch.setattr(launcher, "_read_port_file", lambda profile: None)
+    monkeypatch.setattr(launcher.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(launcher.time, "monotonic", _counting_clock())
+
+    browser = launcher.Browser("chrome", tmp_path / "chrome.exe")
+    with pytest.raises(EnvironmentError_) as excinfo:
+        launcher._launch(launcher._SILENT, browser, headed=False, wait=1)
+    assert excinfo.value.exit_code == ExitCode.ENVIRONMENT_ERROR
+    assert "browser.log" in excinfo.value.hint
+
+
+def test_ensure_browser_reuses_running_instance(monkeypatch, tmp_path: Path) -> None:
+    """参数一致时复用已在跑的实例，不再启动新进程。"""
+    launcher = _launcher_paths(monkeypatch, tmp_path)
+    browser = launcher.Browser("chrome", tmp_path / "chrome.exe")
+    live = launcher.Session(browser, 1234, "ws://127.0.0.1:1234/x", headed=False)
+    monkeypatch.setattr(launcher, "detect_browser", lambda explicit=None: browser)
+    monkeypatch.setattr(launcher, "current_session", lambda: live)
+    monkeypatch.setattr(launcher, "_launch", lambda *a, **k: pytest.fail("不该重新启动浏览器"))
+
+    assert launcher.ensure_browser(launcher._SILENT, headed=False) is live
+
+
+def test_ensure_browser_restarts_when_mode_changes(monkeypatch, tmp_path: Path) -> None:
+    """无窗口 → 有窗口必须先关掉旧实例：同一个 profile 开不了第二个。"""
+    launcher = _launcher_paths(monkeypatch, tmp_path)
+    browser = launcher.Browser("chrome", tmp_path / "chrome.exe")
+    live = launcher.Session(browser, 1234, "ws://127.0.0.1:1234/x", headed=False)
+    fresh = launcher.Session(browser, 4321, "ws://127.0.0.1:4321/x", headed=True)
+    stopped: list[int] = []
+    monkeypatch.setattr(launcher, "detect_browser", lambda explicit=None: browser)
+    monkeypatch.setattr(launcher, "current_session", lambda: live)
+    monkeypatch.setattr(launcher, "stop_browser", lambda console=None: stopped.append(1) or True)
+    monkeypatch.setattr(launcher, "_launch", lambda *a, **k: fresh)
+
+    assert launcher.ensure_browser(launcher._SILENT, headed=True) is fresh
+    assert stopped == [1]
+
+
+def test_ensure_browser_without_browser_raises(monkeypatch, tmp_path: Path) -> None:
+    launcher = _launcher_paths(monkeypatch, tmp_path)
+    from bb_sync.core.errors import EnvironmentError_
+
+    monkeypatch.setattr(launcher, "detect_browser", lambda explicit=None: None)
+    with pytest.raises(EnvironmentError_):
+        launcher.ensure_browser(launcher._SILENT)
+
+
+def test_browser_session_closes_by_default(monkeypatch, tmp_path: Path) -> None:
+    """默认跑完就关：命令结束不留后台浏览器。"""
+    launcher = _launcher_paths(monkeypatch, tmp_path)
+    session = launcher.Session(
+        launcher.Browser("chrome", tmp_path / "chrome.exe"), 1, "ws://x/", headed=False
+    )
+    closed: list[int] = []
+    monkeypatch.setattr(launcher, "ensure_browser", lambda *a, **k: session)
+    monkeypatch.setattr(launcher, "stop_browser", lambda console=None: closed.append(1) or True)
+
+    with launcher.browser_session(launcher._SILENT) as got:
+        assert got is session
+    assert closed == [1]
+
+
+def test_browser_session_closes_even_when_command_fails(monkeypatch, tmp_path: Path) -> None:
+    """命令中途报错也要收尾，不能把浏览器留在后台。"""
+    launcher = _launcher_paths(monkeypatch, tmp_path)
+    session = launcher.Session(
+        launcher.Browser("chrome", tmp_path / "chrome.exe"), 1, "ws://x/", headed=False
+    )
+    closed: list[int] = []
+    monkeypatch.setattr(launcher, "ensure_browser", lambda *a, **k: session)
+    monkeypatch.setattr(launcher, "stop_browser", lambda console=None: closed.append(1) or True)
+
+    with (
+        pytest.raises(RuntimeError),
+        launcher.browser_session(launcher._SILENT),
+    ):
+        raise RuntimeError("boom")
+    assert closed == [1]
+
+
+def test_browser_session_keep_open_skips_close(monkeypatch, tmp_path: Path) -> None:
+    """``keep_open`` 时保留实例，交给 ``bb-sync browser stop`` 收场。"""
+    launcher = _launcher_paths(monkeypatch, tmp_path)
+    session = launcher.Session(
+        launcher.Browser("chrome", tmp_path / "chrome.exe"), 1, "ws://x/", headed=False
+    )
+    monkeypatch.setattr(launcher, "ensure_browser", lambda *a, **k: session)
+    monkeypatch.setattr(launcher, "stop_browser", lambda console=None: pytest.fail("不该关闭"))
+
+    with launcher.browser_session(launcher._SILENT, keep_open=True) as got:
+        assert got is session
+
+
+def test_stop_browser_returns_false_when_idle(monkeypatch, tmp_path: Path) -> None:
+    """没有实例在跑时是正常的空操作，不报错。"""
+    launcher = _launcher_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(launcher, "current_session", lambda: None)
+
+    assert launcher.stop_browser(launcher._SILENT) is False
+
+
+def test_stop_browser_closes_over_cdp(monkeypatch, tmp_path: Path) -> None:
+    """关闭走 CDP 的 Browser.close（让浏览器自己落盘），而不是按 PID 杀进程。"""
+    launcher = _launcher_paths(monkeypatch, tmp_path)
+    browser = launcher.Browser("chrome", tmp_path / "chrome.exe")
+    session = launcher.Session(browser, 1234, "ws://127.0.0.1:1234/x", headed=False)
+    monkeypatch.setattr(launcher, "current_session", lambda: session)
+    monkeypatch.setattr(launcher.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(launcher, "_probe", lambda port, timeout=2.0: None)
+
+    sent: list[str] = []
+
+    class FakeCdp:
+        def send(self, method: str) -> None:
+            sent.append(method)
+
+    class FakeBrowser:
+        def new_browser_cdp_session(self) -> FakeCdp:
+            return FakeCdp()
+
+    class FakeChromium:
+        def connect_over_cdp(self, url: str, timeout: int) -> FakeBrowser:
+            assert url == session.ws_url
+            return FakeBrowser()
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+
+        def __enter__(self) -> FakePlaywright:
+            return self
+
+        def __exit__(self, *exc: object) -> bool:
+            return False
+
+    monkeypatch.setattr("playwright.sync_api.sync_playwright", lambda: FakePlaywright())
+
+    assert launcher.stop_browser(launcher._SILENT) is True
+    assert sent == ["Browser.close"]
+
+
+def test_legacy_steel_hint(monkeypatch, tmp_path: Path) -> None:
+    """旧版 Steel 目录还在时提示清理；不在时不出声。"""
     from bb_sync import paths
-    from bb_sync.browser import steel
-
-    assert steel.STEEL_ROOT == paths.BB_SYNC_HOME / ".steel"
-    assert steel.STEEL_ROOT.parent == paths.BB_SYNC_HOME
-
-
-def test_steel_macos_common_paths(monkeypatch) -> None:
-    """macOS 回退覆盖 Homebrew Node、系统/用户 Applications 下的 Chrome/Edge。"""
-    from bb_sync.browser import steel
-
-    monkeypatch.setattr(steel, "IS_WIN", False)
-    monkeypatch.setattr(steel, "IS_MACOS", True)
-
-    node_candidates = {str(path).replace("\\", "/") for path in steel._node_candidates()}
-    assert {"/opt/homebrew/bin/node", "/usr/local/bin/node"} <= node_candidates
-
-    browser_candidates = {path.replace("\\", "/") for path in steel._browser_candidates()}
-    assert any(
-        path.endswith("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
-        for path in browser_candidates
-    )
-    assert any(
-        path.endswith("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge")
-        for path in browser_candidates
-    )
-
-
-def test_steel_finds_npm_next_to_node(monkeypatch, tmp_path: Path) -> None:
-    """Node 经非 PATH 的 Homebrew 等位置命中时，npm 也应从同目录解析。"""
-    from bb_sync.browser import steel
-
-    node = tmp_path / "bin" / "node"
-    npm = tmp_path / "bin" / "npm"
-    node.parent.mkdir(parents=True)
-    node.write_text("node", encoding="utf-8")
-    npm.write_text("npm", encoding="utf-8")
-    monkeypatch.setattr(steel.shutil, "which", lambda name: None)
-    monkeypatch.setattr(steel, "_node_bin", lambda: str(node))
-
-    assert steel._npm_bin() == str(npm)
-
-
-def test_steel_start_server_detaches_on_macos(monkeypatch, tmp_path: Path) -> None:
-    """macOS 后台进程进入独立会话，终端退出时不应被 SIGHUP 结束。"""
-    from bb_sync.browser import steel
-
-    root = tmp_path / "home" / ".bb-sync" / ".steel"
-    _fake_steel_install(root, "macos")
-    _point_steel_at(monkeypatch, root)
-    monkeypatch.setattr(steel, "IS_WIN", False)
-    monkeypatch.setattr(steel, "_node_bin", lambda: "/opt/homebrew/bin/node")
-    monkeypatch.setattr(steel, "detect_browser", lambda: None)
-    monkeypatch.setattr(steel, "healthy", lambda: True)
-    monkeypatch.setattr(steel.time, "sleep", lambda _seconds: None)
-
-    captured_cmd: object = None
-    captured_kwargs: dict[str, object] = {}
-
-    def fake_popen(cmd, **kwargs):
-        nonlocal captured_cmd
-        captured_cmd = cmd
-        captured_kwargs.update(kwargs)
-        return object()
-
-    monkeypatch.setattr(steel.subprocess, "Popen", fake_popen)
-
-    steel.start_server(wait=1)
-
-    assert captured_cmd == [
-        "/opt/homebrew/bin/node",
-        str(root / "node_modules" / "tsx" / "dist" / "cli.mjs"),
-        "src/index.ts",
-    ]
-    assert captured_kwargs["start_new_session"] is True
-
-
-def test_doctor_macos_install_hints(monkeypatch) -> None:
-    """doctor 在 macOS 上应给出 Homebrew 修复命令，而不是 winget。"""
-    from bb_sync.browser import steel
     from bb_sync.core import doctor
 
-    monkeypatch.setattr(doctor.sys, "platform", "darwin")
-    monkeypatch.setattr(steel, "IS_WIN", False)
-    monkeypatch.setattr(steel, "IS_MACOS", True)
+    monkeypatch.setattr(paths, "BB_SYNC_HOME", tmp_path)
+    assert doctor.legacy_steel_hint() == ""
 
-    assert "brew install git" in doctor._git_install_hint()
-    assert "brew install node" in steel._node_install_hint()
-    assert "brew install --cask" in doctor._browser_install_hint()
+    (tmp_path / ".steel").mkdir()
+    assert ".steel" in doctor.legacy_steel_hint()
 
 
-def test_steel_zip_url_is_pinned_to_commit() -> None:
-    """源码包锚定到具体 commit，不跟随 main / tag 漂移。"""
-    from bb_sync.browser import steel
+def test_doctor_checks_do_not_require_node() -> None:
+    """Node / npm 只为旧的 Steel 后端存在，不该再出现在体检项里。"""
+    from bb_sync.core import doctor
 
-    assert len(steel.STEEL_REF) == 40
-    assert all(c in "0123456789abcdef" for c in steel.STEEL_REF)
-    url = steel._default_zip_url()
-    assert steel.STEEL_REF in url
-    assert "refs/heads" not in url
-
-
-def test_steel_extracted_root_allows_any_ref_name(tmp_path: Path) -> None:
-    """zip 根目录名随 ref 变化（分支/tag/commit），按目录探测而不是硬编码。"""
-    from bb_sync.browser import steel
-
-    tmp_dir = tmp_path / "tmp"
-    extracted = tmp_dir / f"steel-browser-{steel.STEEL_REF}"
-    extracted.mkdir(parents=True)
-    (tmp_dir / "steel-browser.zip").write_text("zip", encoding="utf-8")  # 压缩包本身不算目录
-
-    assert steel._extracted_root(tmp_dir) == extracted
-
-    (tmp_dir / "steel-browser-main").mkdir()
-    with pytest.raises(EnvironmentError_, match="结构异常"):
-        steel._extracted_root(tmp_dir)
-
-    empty = tmp_path / "empty"
-    empty.mkdir()
-    with pytest.raises(EnvironmentError_, match="结构异常"):
-        steel._extracted_root(empty)
+    names = [fn.__name__ for fn in doctor.CHECKS]
+    assert "check_browser" in names
+    assert "check_browser_backend" in names
+    assert "check_node" not in names
+    assert "check_npm" not in names
 
 
-def test_steel_deploy_reuses_ready_install(monkeypatch, tmp_path: Path) -> None:
-    """已就绪且锚点一致：直接复用，不查 Node、不触网；旧安装补记归属但不谎报修订。"""
-    from bb_sync.browser import steel
+def test_doctor_check_browser_reports_detected(monkeypatch, tmp_path: Path) -> None:
+    from bb_sync.browser import launcher
+    from bb_sync.core import doctor
 
-    root = tmp_path / "home" / ".bb-sync" / ".steel"
-    _fake_steel_install(root, "ready")
-    _point_steel_at(monkeypatch, root)
-    _forbid_node(monkeypatch)
-
-    steel.deploy(steel._SILENT)
-
-    assert (root / "marker.txt").read_text(encoding="utf-8") == "ready"
-    assert steel._read_steel_meta()["zip_url"] == steel.STEEL_ZIP_URL
-    assert steel.installed_ref() is None
-
-
-def test_steel_deploy_keeps_recorded_ref_on_reuse(monkeypatch, tmp_path: Path) -> None:
-    """已记录锚点的安装复用时不改写元数据（doctor 显示的版本保持准确）。"""
-    import json
-
-    from bb_sync.browser import steel
-
-    root = tmp_path / "home" / ".bb-sync" / ".steel"
-    _fake_steel_install(root, "ready")
-    _point_steel_at(monkeypatch, root)
-    recorded = {
-        "tool": "bb-sync",
-        "schema": 1,
-        "steel_ref": steel.STEEL_REF,
-        "zip_url": steel.STEEL_ZIP_URL,
-        "recorded_at": "2026-09-28T00:00:00+0800",
-    }
-    steel._steel_meta_path().write_text(json.dumps(recorded), encoding="utf-8")
-    _forbid_node(monkeypatch)
-
-    steel.deploy(steel._SILENT)
-
-    assert steel._read_steel_meta()["recorded_at"] == "2026-09-28T00:00:00+0800"
+    monkeypatch.delenv("CHROME_EXECUTABLE_PATH", raising=False)
+    monkeypatch.setattr(
+        launcher,
+        "detect_browser",
+        lambda explicit=None: launcher.Browser("chrome", tmp_path / "chrome.exe"),
+    )
+    result = doctor.check_browser()
+    assert result.ok is True
+    assert "Chrome" in result.detail
 
 
-def test_steel_deploy_updates_old_anchor(monkeypatch, tmp_path: Path) -> None:
-    """锚点变化：先下载再替换，成功后才删旧目录；之后直接复用。"""
-    from bb_sync.browser import steel
+def test_doctor_check_browser_reports_missing(monkeypatch) -> None:
+    from bb_sync.browser import launcher
+    from bb_sync.core import doctor
 
-    root = tmp_path / "home" / ".bb-sync" / ".steel"
-    _fake_steel_install(root, "old")
-    _write_old_anchor_meta(root)
-    _point_steel_at(monkeypatch, root)
-    calls = _stub_fresh_install(monkeypatch, "fresh")
-
-    steel.deploy(steel._SILENT)
-
-    assert calls == {"download": 1, "npm": 1}
-    assert (root / "marker.txt").read_text(encoding="utf-8") == "fresh"
-    assert steel._read_steel_meta()["zip_url"] == steel.STEEL_ZIP_URL
-    assert steel.installed_ref() == steel.STEEL_REF
-    assert not list(root.parent.glob(".steel.old-*"))
-
-    _forbid_node(monkeypatch)
-    steel.deploy(steel._SILENT)
-    assert calls == {"download": 1, "npm": 1}
+    monkeypatch.delenv("CHROME_EXECUTABLE_PATH", raising=False)
+    monkeypatch.setattr(launcher, "detect_browser", lambda explicit=None: None)
+    result = doctor.check_browser()
+    assert result.ok is False
+    assert result.required is True
 
 
-def test_steel_deploy_keeps_install_when_download_fails(monkeypatch, tmp_path: Path) -> None:
-    """下载失败（网络问题）时旧安装原样保留，不会先删再装。"""
-    from bb_sync.browser import steel
+def test_doctor_network_checks_blackboard_site() -> None:
+    """网络体检盯的是 Blackboard 站点，而不是已经不再依赖的 github。"""
+    import inspect
 
-    root = tmp_path / "home" / ".bb-sync" / ".steel"
-    _fake_steel_install(root, "old")
-    _write_old_anchor_meta(root)
-    _point_steel_at(monkeypatch, root)
+    from bb_sync.blackboard.models import BASE
+    from bb_sync.core import doctor
 
-    def no_network(console, tmp_dir: Path) -> Path:
-        raise NetworkError("下载失败")
-
-    monkeypatch.setattr(steel, "_download_source", no_network)
-    monkeypatch.setattr(steel, "_node_bin", lambda: "/fake/node")
-    monkeypatch.setattr(steel, "_npm_bin", lambda: "/fake/npm")
-
-    with pytest.raises(NetworkError):
-        steel.deploy(steel._SILENT)
-
-    assert (root / "marker.txt").read_text(encoding="utf-8") == "old"
-    assert steel.is_deployed()
-    assert not list(root.parent.glob(".steel.old-*"))
-
-
-def test_steel_deploy_rolls_back_when_install_fails(monkeypatch, tmp_path: Path) -> None:
-    """依赖装坏时回滚：旧安装恢复原位，下次运行仍可用。"""
-    from bb_sync.browser import steel
-
-    root = tmp_path / "home" / ".bb-sync" / ".steel"
-    _fake_steel_install(root, "old")
-    _write_old_anchor_meta(root)
-    _point_steel_at(monkeypatch, root)
-    _stub_fresh_install(monkeypatch, "fresh")
-
-    def fail_install(npm: str, console) -> None:
-        raise EnvironmentError_("npm install 失败", "看日志")
-
-    monkeypatch.setattr(steel, "_install_dependencies", fail_install)
-
-    with pytest.raises(EnvironmentError_):
-        steel.deploy(steel._SILENT)
-
-    assert (root / "marker.txt").read_text(encoding="utf-8") == "old"
-    assert steel.is_deployed()
-    assert not list(root.parent.glob(".steel.old-*"))
-
-
-def test_steel_deploy_reinstalls_broken_install(monkeypatch, tmp_path: Path) -> None:
-    """残缺目录（上次安装中断）：重新安装，残余随替换清掉。"""
-    from bb_sync.browser import steel
-
-    root = tmp_path / "home" / ".bb-sync" / ".steel"
-    (root / "api").mkdir(parents=True)  # 上次安装中断留下的空壳
-    (root / "leftover.txt").write_text("half-downloaded", encoding="utf-8")
-    _point_steel_at(monkeypatch, root)
-    calls = _stub_fresh_install(monkeypatch, "fresh")
-
-    steel.deploy(steel._SILENT)
-
-    assert calls == {"download": 1, "npm": 1}
-    assert (root / "marker.txt").read_text(encoding="utf-8") == "fresh"
-    assert not (root / "leftover.txt").exists()
-    assert not list(root.parent.glob(".steel.old-*"))
-    assert steel.installed_ref() == steel.STEEL_REF
+    source = inspect.getsource(doctor.check_network)
+    assert "BASE" in source
+    assert "github" not in source
+    assert BASE == "https://bb.cuhk.edu.cn"
 
 
 # ---------------------------------------------------------------- 抓取辅助函数
@@ -1298,11 +1353,9 @@ def test_run_sync_integrates_due_markdown(monkeypatch, tmp_path: Path, dry_run: 
             return False
 
     course = Course(bb_id="_1_1", title="CSC5010: Artificial Intelligence")
-    monkeypatch.setattr(service.steel, "ensure_server", lambda *args, **kwargs: None)
-    monkeypatch.setattr(service.steel, "create_session", lambda *args, **kwargs: object())
-    monkeypatch.setattr(service.steel, "release_session", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service.launcher, "ensure_browser", lambda *args, **kwargs: object())
     monkeypatch.setattr(
-        service.steel, "connect", lambda *args, **kwargs: (Dummy(), Dummy(), object())
+        service.launcher, "connect", lambda *args, **kwargs: (Dummy(), Dummy(), object())
     )
     monkeypatch.setattr(service, "sync_playwright", lambda: FakePlaywrightContext())
     monkeypatch.setattr(service, "ensure_login", lambda *args, **kwargs: None)
