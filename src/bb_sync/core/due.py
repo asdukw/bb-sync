@@ -9,8 +9,8 @@ from pathlib import Path
 
 from bb_sync.blackboard.models import BASE, Course, DueItem
 
-#: 分组顺序就是学生处理任务的优先级。
-_BUCKET_ORDER = ("overdue", "today", "tomorrow", "next_7_days", "future", "unknown")
+#: 分组顺序就是学生处理任务的优先级；「已过期事件」只是留档回看，所以排最后。
+_BUCKET_ORDER = ("overdue", "today", "tomorrow", "next_7_days", "future", "unknown", "past_events")
 _BUCKET_LABELS = {
     "overdue": "已逾期",
     "today": "今天",
@@ -18,6 +18,7 @@ _BUCKET_LABELS = {
     "next_7_days": "未来 7 天",
     "future": "之后",
     "unknown": "日期未知",
+    "past_events": "已过期事件",
 }
 
 #: 非普通任务的待办类型标签（来自公告的课堂测验 / 考试）；顺序即汇总文案里的出现顺序。
@@ -29,10 +30,21 @@ def kind_label(kind: str) -> str:
     return _KIND_LABELS.get(kind, "")
 
 
+def _is_past_event(item: DueItem, today: date) -> bool:
+    """公告里的一次性事件（测验 / 考试）日期已过：它只能回看，没法再「做」。
+
+    与 ``overdue`` 的区别：To Do 模块的逾期任务意味着「还没交」，仍然要行动；
+    考完的测验 / 考试已是历史，混进待办里只会淹没真正要做的事。
+    """
+    return item.kind in _KIND_LABELS and item.due_date is not None and item.due_date < today
+
+
 def _bucket(item: DueItem, today: date) -> str:
     """按剩余时间归类；无法解析日期的任务放最后，避免被误判成低优先级。"""
     if item.due_date is None:
         return "unknown"
+    if _is_past_event(item, today):
+        return "past_events"
     if item.due_date < today:
         return "overdue"
     if item.due_date == today:
@@ -44,13 +56,14 @@ def _bucket(item: DueItem, today: date) -> str:
     return "future"
 
 
-def _relative_due(item: DueItem, today: date) -> str:
+def relative_due(item: DueItem, today: date) -> str:
     """生成截止日期旁的中文提示。"""
     if item.due_date is None:
         return item.due_text or "日期未知"
     delta = (item.due_date - today).days
     if delta < 0:
-        return f"逾期 {-delta} 天"
+        # 逾期的 To Do 是「还没交」，公告里的测验 / 考试是「已经考过」，措辞分开。
+        return f"已过 {-delta} 天" if item.kind in _KIND_LABELS else f"逾期 {-delta} 天"
     if delta == 0:
         return "今天"
     if delta == 1:
@@ -83,7 +96,7 @@ def build_due_markdown(
 ) -> str:
     """生成全局 ``due.md`` 文本。
 
-    输出按「已逾期 → 今天 → 明天 → 未来 7 天 → 之后 → 日期未知」排序；
+    输出按「已逾期 → 今天 → 明天 → 未来 7 天 → 之后 → 日期未知 → 已过期事件」排序；
     同一分组内再按日期、课程和任务名稳定排序。
     """
     day = today or date.today()
@@ -94,7 +107,9 @@ def build_due_markdown(
     for bucket_items in grouped.values():
         bucket_items.sort(key=_sort_key)
 
-    kind_counts = Counter(item.kind for item in items)
+    # 过期事件单独成区，汇总行也不把它算进「待办」，否则「测验 2 项」里混着考完的。
+    past_events = grouped.get("past_events", [])
+    kind_counts = Counter(item.kind for item in items if not _is_past_event(item, day))
     # 只统计公告整理出的待办，按 _KIND_LABELS 的固定顺序列出（测验 → 考试）。
     announcement_parts = [
         f"{label} {kind_counts[kind]} 项"
@@ -109,6 +124,8 @@ def build_due_markdown(
     ]
     if announcement_parts:
         lines.append(f"> 其中公告里的{'、'.join(announcement_parts)}已一并作为待办列出。")
+    if past_events:
+        lines.append(f"> 另有 {len(past_events)} 项公告里的测验/考试日期已过，列在最后仅供回看。")
     if failed:
         lines.append(f"> 注意：{failed} 门课程抓取失败，结果可能不完整。")
     lines.append("")
@@ -134,7 +151,7 @@ def build_due_markdown(
             label = kind_label(item.kind)
             badge = f"【{label}】" if label else ""
             lines.append(
-                f"- **{due}**（{_relative_due(item, day)}） — "
+                f"- **{due}**（{relative_due(item, day)}） — "
                 f"[{_escape_markdown(item.course_label)}]({course_url}) — "
                 f"{badge}{_escape_markdown(item.title)}"
             )
@@ -166,4 +183,10 @@ def write_due_markdown(
     return path
 
 
-__all__ = ["build_due_markdown", "kind_label", "sort_due_items", "write_due_markdown"]
+__all__ = [
+    "build_due_markdown",
+    "kind_label",
+    "relative_due",
+    "sort_due_items",
+    "write_due_markdown",
+]

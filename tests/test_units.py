@@ -822,7 +822,9 @@ def test_parse_announcement_date_supports_common_formats() -> None:
 
 
 def test_parse_announcement_due_items_keeps_only_dated_quiz() -> None:
-    """只收录带未来日期的测验：资料/回顾类公告不能变成待办。"""
+    """只收录带近期日期的测验：资料/回顾类公告不能变成待办。"""
+    from datetime import date
+
     from bb_sync.blackboard.models import Course
     from bb_sync.blackboard.scraper import parse_announcement_due_items
 
@@ -857,7 +859,7 @@ def test_parse_announcement_due_items_keeps_only_dated_quiz() -> None:
         },
     ]
 
-    items = parse_announcement_due_items(entries, course)
+    items = parse_announcement_due_items(entries, course, today=date(2026, 10, 13))
 
     assert len(items) == 1
     assert items[0].kind == "quiz"
@@ -867,7 +869,44 @@ def test_parse_announcement_due_items_keeps_only_dated_quiz() -> None:
     assert items[0].due_date.isoformat() == "2026-10-13"
 
 
+def test_parse_announcement_due_items_drops_events_past_retention() -> None:
+    """考完超过保留期的公告事件不再收录；最近几天内的仍保留，供回看。"""
+    from datetime import date
+
+    from bb_sync.blackboard.models import Course
+    from bb_sync.blackboard.scraper import parse_announcement_due_items
+
+    course = Course(bb_id="_1_1", title="MDS5020:Data Mining_L01")
+    entries = [
+        {
+            "title": "In-Class Quiz-1 (Oct.13)",
+            "posted_on": "Posted on: Tuesday, September 29, 2026 5:02:06 PM CST",
+            "body_markdown": "In-Class Quiz-1 is scheduled for **Octorber 13, 2026**.",
+        },
+        {
+            "title": "In-Class Quiz-0 (Oct.7)",
+            "posted_on": "Posted on: Tuesday, September 22, 2026 5:02:06 PM CST",
+            "body_markdown": "In-Class Quiz-0 is scheduled for **October 7, 2026**.",
+        },
+        {
+            "title": "In-Class Quiz-Past (Oct.1)",
+            "posted_on": "Posted on: Tuesday, September 15, 2026 5:02:06 PM CST",
+            "body_markdown": "In-Class Quiz-Past is scheduled for **October 1, 2026**.",
+        },
+    ]
+
+    items = parse_announcement_due_items(entries, course, today=date(2026, 10, 14))
+
+    # 10/13 与 10/7（恰好 7 天）在保留期内，10/1 已超期。
+    assert [item.title for item in items] == [
+        "In-Class Quiz-1 (Oct.13)",
+        "In-Class Quiz-0 (Oct.7)",
+    ]
+
+
 def test_parse_announcement_due_items_infers_year_across_term_boundary() -> None:
+    from datetime import date
+
     from bb_sync.blackboard.models import Course
     from bb_sync.blackboard.scraper import parse_announcement_due_items
 
@@ -880,13 +919,15 @@ def test_parse_announcement_due_items_infers_year_across_term_boundary() -> None
         }
     ]
 
-    items = parse_announcement_due_items(entries, course)
+    items = parse_announcement_due_items(entries, course, today=date(2026, 12, 7))
 
     assert [item.due_date.isoformat() for item in items if item.due_date] == ["2027-01-10"]
 
 
 def test_parse_announcement_due_items_recognizes_exams() -> None:
     """exam 系关键词与 midterm / final + test 组合算考试，日常措辞不算。"""
+    from datetime import date
+
     from bb_sync.blackboard.models import Course
     from bb_sync.blackboard.scraper import parse_announcement_due_items
 
@@ -929,7 +970,7 @@ def test_parse_announcement_due_items_recognizes_exams() -> None:
         },
     ]
 
-    items = parse_announcement_due_items(entries, course)
+    items = parse_announcement_due_items(entries, course, today=date(2026, 11, 2))
 
     assert [(item.kind, item.title) for item in items] == [
         ("exam", "Final Exam Schedule"),
@@ -947,6 +988,8 @@ def test_parse_announcement_due_items_recognizes_exams() -> None:
 
 def test_parse_announcement_due_items_prefers_exam_over_quiz() -> None:
     """一条公告同时提到考试和测验时归为考试：覆盖测验内容的期末考不该被当成测验。"""
+    from datetime import date
+
     from bb_sync.blackboard.models import Course
     from bb_sync.blackboard.scraper import parse_announcement_due_items
 
@@ -959,7 +1002,7 @@ def test_parse_announcement_due_items_prefers_exam_over_quiz() -> None:
         }
     ]
 
-    items = parse_announcement_due_items(entries, course)
+    items = parse_announcement_due_items(entries, course, today=date(2026, 11, 2))
 
     assert [
         (item.kind, item.due_date.isoformat() if item.due_date else None) for item in items
@@ -1114,6 +1157,59 @@ def test_build_due_markdown_marks_announcement_quiz_and_exam() -> None:
     assert "其中公告里的测验 1 项、考试 1 项已一并作为待办列出。" in markdown
     assert "【测验】In-Class Quiz-1 (Oct.13)" in markdown
     assert "【考试】Final Exam" in markdown
+
+
+def test_build_due_markdown_separates_past_events() -> None:
+    """考完的公告事件单独成区：既不占「已逾期」，也不计进待办汇总。"""
+    from datetime import date, datetime
+
+    from bb_sync.blackboard.models import Course, DueItem
+    from bb_sync.core.due import build_due_markdown
+
+    courses = [Course(bb_id="_1_1", title="MDS5020:Data Mining_L01")]
+    items = [
+        DueItem(
+            "_1_1",
+            "MDS5020",
+            courses[0].title,
+            "In-Class Quiz-1 (Oct.13)",
+            date(2026, 10, 13),
+            kind="quiz",
+        ),
+        DueItem(
+            "_1_1",
+            "MDS5020",
+            courses[0].title,
+            "Assignment 1",
+            date(2026, 10, 10),
+            "Due 10/10/26",
+        ),
+        DueItem(
+            "_1_1",
+            "MDS5020",
+            courses[0].title,
+            "Midterm Exam",
+            date(2026, 11, 17),
+            kind="exam",
+        ),
+    ]
+
+    markdown = build_due_markdown(
+        courses,
+        items,
+        generated_at=datetime(2026, 10, 14, 21, 30),
+        today=date(2026, 10, 14),
+    )
+
+    assert "## 已逾期（1）" in markdown
+    assert "**2026-10-10**（逾期 4 天）" in markdown
+    assert "## 已过期事件（1）" in markdown
+    assert "**2026-10-13**（已过 1 天）" in markdown
+    # 过期事件排在待办分组之后，不挤占优先级
+    assert markdown.index("## 之后（1）") < markdown.index("## 已过期事件（1）")
+    # 汇总只把还能行动的考试算进待办
+    assert "其中公告里的考试 1 项已一并作为待办列出。" in markdown
+    assert "另有 1 项公告里的测验/考试日期已过，列在最后仅供回看。" in markdown
 
 
 def test_due_item_as_dict_includes_kind() -> None:
@@ -1288,9 +1384,13 @@ def test_print_due_details_one_item_per_line() -> None:
     class FakeConsole:
         def __init__(self) -> None:
             self.messages: list[str] = []
+            self.rules: list[str] = []
 
         def log(self, message: str) -> None:
             self.messages.append(message)
+
+        def rule(self, title: str = "") -> None:
+            self.rules.append(title)
 
     fake = FakeConsole()
     console = cast(Console, fake)
@@ -1302,12 +1402,15 @@ def test_print_due_details_one_item_per_line() -> None:
             DueItem("_3_1", "MDS5020", "DM", "Quiz 1", date(2026, 10, 13), kind="quiz"),
             DueItem("_4_1", "CSC5010", "AI", "Final Exam", date(2026, 12, 15), kind="exam"),
         ],
+        today=date(2026, 10, 14),
     )
 
+    # 只有已经过去的条目带状态：逾期的是「还没交」，考完的是「已经考过」。
+    assert fake.rules == ["待办明细"]
     assert fake.messages == [
-        "[due] 2026-10-10 | CSC5010 | Homework 1",
+        "[due] 2026-10-10（逾期 4 天） | CSC5010 | Homework 1",
         "[due] 日期未知 | MDS5122 | Reading",
-        "[due] 2026-10-13 | MDS5020 | 【测验】Quiz 1",
+        "[due] 2026-10-13（已过 1 天） | MDS5020 | 【测验】Quiz 1",
         "[due] 2026-12-15 | CSC5010 | 【考试】Final Exam",
     ]
 
@@ -1321,14 +1424,20 @@ def test_print_due_details_empty_writes_congratulations() -> None:
     class FakeConsole:
         def __init__(self) -> None:
             self.messages: list[str] = []
+            self.rules: list[str] = []
 
         def log(self, message: str) -> None:
             self.messages.append(message)
+
+        def rule(self, title: str = "") -> None:
+            self.rules.append(title)
 
     fake = FakeConsole()
     console = cast(Console, fake)
     service._print_due_details(console, [])
 
+    # 没有待办时不打印空的明细标题
+    assert fake.rules == []
     assert fake.messages == ["[due] Congratulations! 没有待办。"]
 
 

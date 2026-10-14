@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path, PurePosixPath
 
 from playwright.sync_api import sync_playwright
@@ -327,16 +328,26 @@ def _print_summary(console: Console, stats: SyncStats, dry_run: bool) -> None:
         console.warn(f"失败 {stats.failed} 个")
 
 
-def _print_due_details(console: Console, items: list[DueItem], failed: int = 0) -> None:
-    """在 ``run`` 最后逐行打印待办明细（stderr）。"""
+def _print_due_details(
+    console: Console, items: list[DueItem], failed: int = 0, *, today: date | None = None
+) -> None:
+    """在 ``run`` 最后逐行打印待办明细（stderr）。
+
+    行格式 ``[due] 日期（状态）| 课程 | 标题``；只有**已经过去**的条目才带状态，
+    否则整屏都是「还有 N 天」，反而看不出哪条已经过期。
+    """
     if not items:
         if failed:
             console.log("[due] 没有可显示的待办明细（部分课程抓取失败）")
         else:
             console.log("[due] Congratulations! 没有待办。")
         return
+    day = today or date.today()
+    console.rule("待办明细")
     for item in items:
         due_date = item.due_date.isoformat() if item.due_date else "日期未知"
+        if item.due_date is not None and item.due_date < day:
+            due_date = f"{due_date}（{due.relative_due(item, day)}）"
         label = due.kind_label(item.kind)
         badge = f"【{label}】" if label else ""
         console.log(f"[due] {due_date} | {item.course_label} | {badge}{item.title}")

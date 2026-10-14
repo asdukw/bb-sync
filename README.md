@@ -79,7 +79,7 @@ bb-sync run
 - 作业 → `assignments/`
 - 指导 / 实验 → `tutorials/`
 - 公告 → `announcements.md`
-- 全部课程待办 → `due.md`（按优先级排列；公告里带日期的课堂测验与考试也计入，没有待办时显示 Congratulations）
+- 全部课程待办 → `due.md`（按优先级排列；公告里带日期的课堂测验与考试也计入，日期已过的归入最后的「已过期事件」并保留 7 天，没有待办时显示 Congratulations）
 
 要修改下载目录：
 

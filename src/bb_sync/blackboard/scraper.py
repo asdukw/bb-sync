@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 import time
 from contextlib import suppress
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from playwright.sync_api import Page
@@ -378,6 +378,10 @@ _ANNOUNCEMENT_KIND_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 #: 关键词之后最多检查这么多字符，避免把远处的日期牵强算成考试/测验日期。
 _KEYWORD_DATE_WINDOW = 240
 
+#: 公告里的一次性事件（测验 / 考试）过了日期后仍然收录这么多天，更早的视为历史。
+#: 公告页会列出整学期的公告，没有这条限制的话考完的测验会一直堆在 due.md 里。
+_PAST_EVENT_RETENTION_DAYS = 7
+
 
 def _month_number(word: str) -> int | None:
     """按前三字母识别月份，返回月号；不是月份返回 None。"""
@@ -505,12 +509,16 @@ def _announcement_label_from_body(body: str, pattern: re.Pattern[str]) -> str:
     return ""
 
 
-def parse_announcement_due_items(entries: list[dict[str, str]], course: Course) -> list[DueItem]:
+def parse_announcement_due_items(
+    entries: list[dict[str, str]], course: Course, *, today: date | None = None
+) -> list[DueItem]:
     """把公告里带日期的课堂测验与考试整理成待办条目。
 
-    读不出日期、或日期早于公告发布时间的公告一律跳过：宁可不收录，
-    也不要把「复习资料里提到 quiz」误当成待办。
+    读不出日期、日期早于公告发布时间、或日期已过去超过 ``_PAST_EVENT_RETENTION_DAYS``
+    天的公告一律跳过：宁可不收录，也不要把「复习资料里提到 quiz」误当成待办；
+    已经考完的测验 / 考试只值得回看，不该继续占着待办位。
     """
+    oldest = (today or date.today()) - timedelta(days=_PAST_EVENT_RETENTION_DAYS)
     items: list[DueItem] = []
     seen: set[tuple[str, str]] = set()
     for entry in entries:
@@ -524,7 +532,7 @@ def parse_announcement_due_items(entries: list[dict[str, str]], course: Course) 
         kind, pattern = matched
         posted = parse_announcement_date(str(entry.get("posted_on") or ""))
         due_date = _extract_keyword_date(title, body, posted, pattern)
-        if due_date is None:
+        if due_date is None or due_date < oldest:
             continue
         label = title or _announcement_label_from_body(body, pattern) or course.code or course.title
         key = (due_date.isoformat(), label.casefold())
