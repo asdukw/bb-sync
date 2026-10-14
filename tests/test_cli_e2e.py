@@ -14,10 +14,14 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
+import sys
 from pathlib import Path
 
 import pytest
+from click._compat import strip_ansi
 
 # ---------------------------------------------------------------- 基础命令契约
 
@@ -60,6 +64,104 @@ def test_root_help_lists_subcommands_without_importing_them(cli) -> None:
     assert result.exit_code == 0
     leaked = [m for m in sys.modules if m.startswith("bb_sync.commands")]
     assert leaked == [], f"根帮助不应导入命令模块，实际导入了：{leaked}"
+
+
+class _FakeTTY(io.TextIOBase):
+    """伪终端：只把 ``isatty()`` 报成 True。
+
+    Click 的 ``echo`` 依据 ``isatty`` 决定要不要剥掉 ANSI，所以不必给命令传
+    ``color=``——把 stdout 换成这个流，就等于告诉 Click「输出到了终端」。
+    """
+
+    def __init__(self, sink: io.StringIO) -> None:
+        super().__init__()
+        self._sink = sink
+
+    def isatty(self) -> bool:
+        return True
+
+    def write(self, s: str) -> int:
+        self._sink.write(s)
+        return len(s)
+
+    def flush(self) -> None:
+        pass
+
+
+def _run_main(args: list[str], monkeypatch: pytest.MonkeyPatch, *, tty: bool) -> str:
+    """在进程内跑一次 ``main()``，返回 stdout（stderr 丢弃）。
+
+    刻意走 ``main()`` 而不是 CliRunner：彩色与否取决于 ``isatty``，只有真实
+    的 stdout 对象才能体现出来。
+    """
+    from bb_sync.cli import main
+
+    sink = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", _FakeTTY(sink) if tty else sink)
+    monkeypatch.setattr(sys, "argv", ["bb-sync", *args])
+    # 走 standalone_mode=False：根命令的 help 是「返回退出码」而非抛 SystemExit，
+    # 只有 Typer 子命令那条路才会抛，两种都容忍。
+    with contextlib.suppress(SystemExit):
+        main()
+    return sink.getvalue()
+
+
+#: 覆盖根帮助、扁平命令、命令组与组内子命令四层
+_HELP_ARGS = ([], ["--help"], ["run", "--help"], ["config", "--help"], ["config", "set", "--help"])
+
+
+@pytest.mark.parametrize("args", _HELP_ARGS)
+def test_help_has_no_ansi_when_piped(args: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    """管道 / 重定向下 help 是纯文本：脚本里 grep 帮助内容不该被转义序列干扰。"""
+    assert "\x1b[" not in _run_main(args, monkeypatch, tty=False)
+
+
+@pytest.mark.parametrize("args", _HELP_ARGS)
+def test_help_is_colored_on_a_tty(args: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    """终端下 help 上色，且剥离转义后与管道版本逐字一致——列对齐没被样式破坏。
+
+    这是彩色 formatter 的核心契约：Click ≥8.4 的 ``term_len`` / ``wrap_text``
+    按「剥离 ANSI 后的可见宽度」排版，所以往缓冲里插转义序列不影响对齐。
+    """
+    colored = _run_main(args, monkeypatch, tty=True)
+    plain = _run_main(args, monkeypatch, tty=False)
+    assert "\x1b[" in colored, f"{args} 在终端下应带 ANSI 样式"
+    assert strip_ansi(colored).rstrip() == plain.rstrip()
+
+
+def test_help_does_not_import_rich(cli) -> None:
+    """``--help`` 不得导入 rich。
+
+    Typer 默认会用自带的 Rich 面板渲染子命令帮助，那既把 rich（约 45 ms）拖进
+    冷启动路径，又会二次处理我们注入的转义序列（``\x1b`` 被吃掉、只剩字面量
+    ``[1m``）。``cli._as_click_group`` 统一关掉了它，这条用例守住这个决定。
+    """
+    for mod in [m for m in sys.modules if m == "rich" or m.startswith("rich.")]:
+        del sys.modules[mod]
+    result = cli(["--help"])
+    assert result.exit_code == 0
+    leaked = [m for m in sys.modules if m == "rich" or m.startswith("rich.")]
+    assert leaked == [], f"根帮助不应导入 rich，实际导入了：{leaked}"
+
+
+@pytest.mark.parametrize("args", _HELP_ARGS)
+def test_builtin_option_text_is_chinese(args: list[str], cli) -> None:
+    """Click 自带的 ``-h, --help`` / ``--version`` 说明也走中文。
+
+    这两条文案是 Click 硬编码的英文（``Show this message and exit.`` 等），
+    与项目其余中文说明不一致，``core.help._localize_help_option`` 负责改写。
+    """
+    result = cli(args)
+    assert result.exit_code == 0
+    assert "显示帮助并退出" in result.stdout
+    assert "Show this message and exit." not in result.stdout
+
+
+def test_version_option_text_is_chinese(cli) -> None:
+    """``--version`` 的说明同样本地化（只有根命令有这个选项）。"""
+    result = cli(["--help"])
+    assert "显示版本并退出" in result.stdout
+    assert "Show the version and exit." not in result.stdout
 
 
 def test_unknown_command_exits_two(cli) -> None:

@@ -32,6 +32,7 @@ import click
 
 from bb_sync import ISSUES_URL, __version__
 from bb_sync.core.errors import BbSyncError, ExitCode, exit_code_for
+from bb_sync.core.help import apply_help_style
 
 #: 命令名 → (模块名, 一句话帮助)
 SUBCOMMANDS: dict[str, tuple[str, str]] = {
@@ -63,14 +64,26 @@ def _notify_update_after_command(result: Any, **_: Any) -> Any:
     return result
 
 
-def _as_click_group(obj: object) -> Any:
+def _as_click_group(obj: Any) -> Any:
     """把命令模块导出的 Typer 实例转成 Click 命令组。
 
     Typer 实例不是 Click 组，需要 ``typer.main.get_command`` 转换
     （延迟到此处调用，避免在模块顶层导入 typer）。
+
+    转换前统一关掉 Typer 自带的 rich help（``rich_markup_mode = None``），
+    理由有两条：
+
+    1. 那套 Rich 面板在终端里并不上色（面板边框与选项名都是默认色），
+       统一走 Click 的 formatter 才能拿到与根帮助一致的颜色；
+    2. Rich 会二次处理 :mod:`bb_sync.core.help` 注入的转义序列——`\x1b` 被
+       吃掉、只剩字面量 ``[1m``，直接污染可见文本。
+
+    关掉之后所有命令都走同一个 formatter，顺带省掉渲染帮助时对 rich 的导入。
     """
     import typer
 
+    if getattr(obj, "rich_markup_mode", None) is not None:
+        obj.rich_markup_mode = None
     return typer.main.get_command(obj)  # type: ignore[arg-type]
 
 
@@ -188,6 +201,7 @@ class LazyGroup(click.Group):
         sub = _module_command(mod, cmd_name)
         sub.help = SUBCOMMANDS[cmd_name][1]
         self.add_command(sub, cmd_name)
+        apply_help_style(sub)
         return self.commands.get(cmd_name)
 
 
@@ -215,7 +229,11 @@ def _build_cli() -> LazyGroup:
         help="指定配置文件路径（默认 CWD，其次 ~/.bb-sync/）",
     )
     @click.version_option(
-        __version__, "--version", prog_name="bb-sync", message="%(prog)s %(version)s"
+        __version__,
+        "--version",
+        prog_name="bb-sync",
+        message="%(prog)s %(version)s",
+        help="显示版本并退出",
     )
     @click.pass_context
     def cli(
@@ -238,6 +256,7 @@ def _build_cli() -> LazyGroup:
             click.echo(ctx.get_help())
             ctx.exit(ExitCode.SUCCESS)
 
+    apply_help_style(cli)
     return cli  # type: ignore[return-value]
 
 
