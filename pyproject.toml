@@ -4,18 +4,34 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bb-sync"
-version = "1.8.1"
-description = "Blackboard 课程资源自动同步：登录 ADFS SSO，增量下载课件/作业/指导、公告与待办"
+version = "1.9.0"
+description = "港中深（CUHK-Shenzhen）Blackboard 课件下载与课程资源自动同步：登录 ADFS SSO，增量下载课件/作业/指导、公告与待办"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"
-keywords = ["blackboard", "scraper", "course", "sync", "adfs", "cli"]
+keywords = [
+    "blackboard",
+    "cuhk-shenzhen",
+    "cuhksz",
+    "course-download",
+    "scraper",
+    "course",
+    "sync",
+    "adfs",
+    "cli",
+    "playwright",
+]
 classifiers = [
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "License :: OSI Approved :: MIT License",
     "Operating System :: MacOS",
     "Operating System :: Microsoft :: Windows",
     "Environment :: Console",
+    "Intended Audience :: Education",
+    "Topic :: Education",
 ]
 dependencies = [
     "click>=8.5.0",
@@ -28,8 +44,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/asdukw/bb-sync"
-Repository = "https://github.com/asdukw/bb-sync"
+Homepage = "https://github.com/asdukw/cuhk-shenzhen-blackboard-sync"
+Repository = "https://github.com/asdukw/cuhk-shenzhen-blackboard-sync"
+Issues = "https://github.com/asdukw/cuhk-shenzhen-blackboard-sync/issues"
+Changelog = "https://github.com/asdukw/cuhk-shenzhen-blackboard-sync/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = [

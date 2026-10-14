@@ -4,8 +4,11 @@ on:
   push:
     tags: ["v*"]
 
+# contents: write 用于建 Release；id-token: write 供 PyPI 信任发布（OIDC）换取短期凭据，
+# 不需要在仓库里存任何 PyPI token。
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   release:
@@ -38,3 +41,8 @@ jobs:
         with:
           generate_release_notes: true
           files: dist/*
+
+      # 发布到 PyPI：走 Trusted Publishing，凭 OIDC 换临时 token，无需任何长期密钥。
+      # 前置条件：PyPI 上已为该仓库配置 pending publisher（见 README / 发布说明）。
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

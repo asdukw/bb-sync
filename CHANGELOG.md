@@ -2,6 +2,24 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.9.0] — 2026-10-14
+
+### 变更
+
+- **仓库更名为 `cuhk-shenzhen-blackboard-sync`**（原 `bb-sync`），让校内同学更容易搜到。
+  GitHub 会自动重定向旧地址，已安装的用户不受影响；但 `bb-sync` 提示里的
+  更新 / 反馈链接、`pyproject.toml` 里的项目地址都已指向新仓库。
+- **发布到 PyPI**：安装方式简化为 `uv tool install bb-sync`，不必再记 GitHub 地址。
+  发布走 Trusted Publishing，仓库里不保存任何 PyPI 密钥。
+
+### 文档
+
+- README 重写首页：补齐校名的各种写法（港中深 / 香港中文大学（深圳）/ CUHK-Shenzhen /
+  CUHKSZ），新增徽章、`due.md` 与下载目录示例、文档导航，并补全了此前遗漏的
+  `auth` / `config` 子命令。
+- 免责声明补充说明：命令结束后会请求一次 GitHub Releases API 检查更新，
+  只发送 `bb-sync/<版本号>` 作为 User-Agent，可用 `BB_SYNC_NO_UPDATE_CHECK=1` 关闭。
+
 ## [1.8.1] — 2026-10-14
 
 ### 修复
