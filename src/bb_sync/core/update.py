@@ -30,7 +30,7 @@ if TYPE_CHECKING:  # 仅用于类型标注，运行时由 Console 自己惰性�
     from bb_sync.core.output import Console
 
 #: GitHub 最新 release API。仓库是 bb-sync 的唯一发布入口。
-RELEASES_API = "https://api.github.com/repos/asdukw/bb-sync/releases/latest"
+RELEASES_API = "https://api.github.com/repos/asdukw/cuhk-shenzhen-blackboard-sync/releases/latest"
 
 #: 更新检查缓存文件（放在用户运行时目录，不写当前工作目录）。
 CACHE_NAME = "update-check.json"
@@ -104,7 +104,7 @@ def _normalize_version(value: str) -> str | None:
 
 def _release_url(version: str, tag: str | None = None) -> str:
     """GitHub release 页面地址；API 没给 html_url 时兜底生成。"""
-    return f"https://github.com/asdukw/bb-sync/releases/tag/{tag or f'v{version}'}"
+    return f"https://github.com/asdukw/cuhk-shenzhen-blackboard-sync/releases/tag/{tag or f'v{version}'}"
 
 
 def _disabled() -> bool:

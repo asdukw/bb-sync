@@ -18,6 +18,6 @@ except metadata.PackageNotFoundError:  # 源码直跑、未安装时
     __version__ = "0.0.0.dev0"
 
 #: 问题反馈入口；错误提示统一引用，避免多处硬编码
-ISSUES_URL = "https://github.com/asdukw/bb-sync/issues"
+ISSUES_URL = "https://github.com/asdukw/cuhk-shenzhen-blackboard-sync/issues"
 
 __all__ = ["ISSUES_URL", "__version__"]
